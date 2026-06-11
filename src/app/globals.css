@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Cabinet Grotesk", "Satoshi", system-ui, sans-serif;
+  --font-body: "Satoshi", system-ui, sans-serif;
+
+  --color-ink: #0e0e10;
+  --color-ink-2: #16161a;
+  --color-ink-3: #1f1f25;
+  --color-ink-4: #2a2a32;
+  --color-paper: #f4f1ec;
+  --color-paper-2: #ffffff;
+  --color-paper-3: #e9e4dc;
+
+  --color-acid: #c8f135;
+  --color-coral: #ff5c4d;
+  --color-sky: #4dc9ff;
+  --color-gold: #ffc24d;
+  --color-mint: #3ee6a8;
+  --color-grape: #b06bff;
+  --color-rose: #ff6bb5;
+
+  --animate-pulse-soft: pulse-soft 2.4s ease-in-out infinite;
+  --animate-float: float 5s ease-in-out infinite;
+
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+}
+
+:root {
+  --accent: #c8f135;
+  --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+  --bg: var(--color-paper);
+  --bg-2: var(--color-paper-2);
+  --bg-3: var(--color-paper-3);
+  --fg: #17171b;
+  --fg-muted: #5c5a55;
+  --line: rgba(20, 20, 24, 0.12);
+}
+
+.dark {
+  --bg: var(--color-ink);
+  --bg-2: var(--color-ink-2);
+  --bg-3: var(--color-ink-3);
+  --fg: #f2f0ea;
+  --fg-muted: #9b99a3;
+  --line: rgba(244, 241, 236, 0.1);
+}
+
+html {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, .display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: var(--accent);
+  color: #0e0e10;
+}
+
+/* The three.js stage sits behind everything; UI floats above it */
+#three-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.ui-layer {
+  position: relative;
+  z-index: 1;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
+/* minimum 44px tap targets on coarse pointers */
+@media (pointer: coarse) {
+  button, a[role="button"], input[type="checkbox"], input[type="radio"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+input, textarea, select {
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.scrollbar-slim::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-slim::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+
+.card-3d {
+  transform-style: preserve-3d;
+  perspective: 1000px;
+}
+.card-3d-inner {
+  transform-style: preserve-3d;
+  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.card-face {
+  backface-visibility: hidden;
+}
+.card-back {
+  transform: rotateY(180deg);
+}
