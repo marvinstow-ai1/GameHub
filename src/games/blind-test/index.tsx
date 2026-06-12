@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Avatar, Button, Chip, Input, Panel } from "@/components/ui";
 import { PhaseHeader, ScoreStrip, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
 interface BlindState {
   round: number;
@@ -50,6 +51,12 @@ function BlindTest({ ctx }: GameProps) {
       const scores = { ...s.scores };
       if (correct) {
         scores[s.buzzedBy] = (scores[s.buzzedBy] ?? 0) + 1;
+        const winScore = setting(snap.state, "winScore", 5);
+        if (scores[s.buzzedBy] >= winScore) {
+          ctx.commit({ state: { ...s, scores, playing: false, buzzedBy: null } });
+          ctx.endGame([s.buzzedBy], scores);
+          return;
+        }
         ctx.commit({ state: { ...s, scores, playing: false, buzzedBy: null } });
       } else {
         // falsch = kein Abzug; Buzzer wird wieder freigegeben, Musik läuft weiter
@@ -82,7 +89,10 @@ function BlindTest({ ctx }: GameProps) {
       <PhaseHeader
         icon="🎧"
         title={`Blind Test – Runde ${state.round ?? 0}`}
-        subtitle={isHost ? "Dein Gerät spielt die Musik – dreh auf!" : "Hör hin und buzzer, wenn du's weißt!"}
+        subtitle={
+          (isHost ? "Dein Gerät spielt die Musik – dreh auf! " : "Hör hin und buzzer, wenn du's weißt! ") +
+          `Wer zuerst ${setting(ctx.state, "winScore", 5)} Punkte hat, gewinnt.`
+        }
       />
 
       {isHost && (
@@ -185,6 +195,9 @@ export const blindTestModule: GameModule = {
   themeColor: "#3ee6a8",
   icon: "🎧",
   phases: ["PLAY", "RESULTS"],
+  settings: [
+    { key: "winScore", label: "Punkte zum Sieg", type: "number", min: 3, max: 15, default: 5 },
+  ],
   component: BlindTest,
   threeScene: { id: "floaters", payload: { items: ["🎵", "🎶", "🎧", "♪"], colors: ["#3ee6a8", "#4dc9ff"], density: 26 } },
 };

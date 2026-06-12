@@ -32,6 +32,21 @@ export interface HostSnapshot {
   status: SessionStatus;
 }
 
+/* ---------- Lobby-Einstellungen pro Spiel ---------- */
+
+export type SettingDef =
+  | { key: string; label: string; type: "number"; min: number; max: number; step?: number; default: number; unit?: string }
+  | { key: string; label: string; type: "select"; options: { value: string; label: string }[]; default: string }
+  | { key: string; label: string; type: "toggle"; default: boolean }
+  | { key: string; label: string; type: "tags"; default: string[]; placeholder?: string; help?: string };
+
+/** Liest eine Lobby-Einstellung aus dem State (vom Host in der Lobby gesetzt). */
+export function setting<T>(state: GameState, key: string, fallback: T): T {
+  const settings = state.settings as Record<string, unknown> | undefined;
+  const value = settings?.[key];
+  return value === undefined || value === null ? fallback : (value as T);
+}
+
 /** Laufzeit-Kontext, den jedes Spiel als Props bekommt. */
 export interface GameCtx {
   session: GameSession;
@@ -74,6 +89,8 @@ export interface GameModule {
   /** Emoji/Kurzlabel für Cards & 3D-Szene */
   icon: string;
   phases: GamePhase[];
+  /** Lobby-Einstellungen (Host konfiguriert, alle sehen sie live) */
+  settings?: SettingDef[];
   component: React.FC<GameProps>;
   /** ID einer registrierten Three.js-Szene + payload (Ambiente pro Spiel) */
   threeScene?: { id: string; payload?: Record<string, unknown> };

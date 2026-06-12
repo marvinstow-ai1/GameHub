@@ -5,9 +5,12 @@ import { motion } from "framer-motion";
 import { Button, Chip, Panel, cn } from "@/components/ui";
 import { PhaseHeader, ScoreStrip, SharedTimer, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
-const TOTAL_QUESTIONS = 10;
-const QUESTION_SECONDS = 15;
+const QUIZ_CATEGORIES = [
+  "Geografie", "Geschichte", "Wissenschaft", "Tiere", "Musik",
+  "Film & TV", "Sport", "Essen & Trinken", "Technik", "Allgemeinwissen",
+];
 
 interface QuizQuestion {
   question: string;
@@ -34,24 +37,31 @@ function QuizBattle({ ctx }: GameProps) {
   const initRef = useRef(false);
   const [picked, setPicked] = useState<number | null>(null);
 
+  const questionSeconds = setting(ctx.state, "seconds", 15);
+
   useEffect(() => {
     if (!isHost || phase !== "QUESTION" || state.questions || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const questions = await ctx.fetchContent<QuizQuestion>("quiz_questions", TOTAL_QUESTIONS);
+      const count = setting(ctx.state, "count", 10);
+      const category = setting<string>(ctx.state, "category", "alle");
+      const pool = await ctx.fetchContent<QuizQuestion>("quiz_questions", 200);
+      const filtered = category === "alle" ? pool : pool.filter((q) => q.category === category);
+      const questions = (filtered.length >= count ? filtered : pool).slice(0, count);
       ctx.commit({
-        state: {
+        state: (s) => ({
+          ...s,
           questions,
           index: 0,
           answers: {},
           scores: {},
           questionStart: Date.now(),
-          timerEnd: Date.now() + QUESTION_SECONDS * 1000,
-          timerTotal: QUESTION_SECONDS * 1000,
-        },
+          timerEnd: Date.now() + questionSeconds * 1000,
+          timerTotal: questionSeconds * 1000,
+        }),
       });
     })();
-  }, [isHost, phase, state.questions, ctx]);
+  }, [isHost, phase, state.questions, ctx, questionSeconds]);
 
   const [prevIndex, setPrevIndex] = useState(state.index);
   if (prevIndex !== state.index) {
@@ -68,7 +78,7 @@ function QuizBattle({ ctx }: GameProps) {
       const scores = { ...s.scores };
       for (const [uid, a] of Object.entries(answers)) {
         if (a.choice === q.correct) {
-          const speedBonus = Math.max(0, Math.round(100 * (1 - a.ms / (QUESTION_SECONDS * 1000))));
+          const speedBonus = Math.max(0, Math.round(100 * (1 - a.ms / (questionSeconds * 1000))));
           scores[uid] = (scores[uid] ?? 0) + 100 + speedBonus;
         }
       }
@@ -98,8 +108,8 @@ function QuizBattle({ ctx }: GameProps) {
           index,
           answers: {},
           questionStart: Date.now(),
-          timerEnd: Date.now() + QUESTION_SECONDS * 1000,
-          timerTotal: QUESTION_SECONDS * 1000,
+          timerEnd: Date.now() + questionSeconds * 1000,
+          timerTotal: questionSeconds * 1000,
         },
         phase: "QUESTION",
       });
@@ -206,6 +216,17 @@ export const quizBattleModule: GameModule = {
   themeColor: "#c8f135",
   icon: "🧠",
   phases: ["QUESTION", "REVEAL", "RESULTS"],
+  settings: [
+    { key: "count", label: "Anzahl Fragen", type: "number", min: 5, max: 25, default: 10 },
+    { key: "seconds", label: "Zeit pro Frage", type: "number", min: 5, max: 30, step: 5, default: 15, unit: "s" },
+    {
+      key: "category",
+      label: "Kategorie",
+      type: "select",
+      options: [{ value: "alle", label: "🌈 Alle" }, ...QUIZ_CATEGORIES.map((c) => ({ value: c, label: c }))],
+      default: "alle",
+    },
+  ],
   component: QuizBattle,
   threeScene: { id: "floaters", payload: { items: ["?", "!", "A", "B", "C", "D"], colors: ["#c8f135", "#4dc9ff"], density: 26 } },
 };

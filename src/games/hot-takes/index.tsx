@@ -5,9 +5,8 @@ import { motion } from "framer-motion";
 import { Button, Input, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, ScoreStrip, SharedTimer, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
-const TOTAL_ROUNDS = 5;
-const WRITE_SECONDS = 60;
 
 interface HotState {
   prompts: { text: string }[];
@@ -22,6 +21,11 @@ interface HotState {
   [key: string]: unknown;
 }
 
+function nextTimer(state: GameProps["ctx"]["state"]) {
+  const writeSeconds = setting(state, "seconds", 60);
+  return { timerEnd: Date.now() + writeSeconds * 1000, timerTotal: writeSeconds * 1000 };
+}
+
 function HotTakes({ ctx }: GameProps) {
   const state = ctx.state as HotState;
   const { phase, self, isHost, players } = ctx;
@@ -32,18 +36,25 @@ function HotTakes({ ctx }: GameProps) {
     if (!isHost || phase !== "WRITE" || state.prompts || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const prompts = await ctx.fetchContent<{ text: string }>("hottake_prompts", TOTAL_ROUNDS);
+      const rounds = setting(ctx.state, "rounds", 5);
+      const writeSeconds = setting(ctx.state, "seconds", 60);
+      const custom = setting<string[]>(ctx.state, "customPrompts", []).map((t) => t.trim()).filter(Boolean);
+      const fetched = await ctx.fetchContent<{ text: string }>("hottake_prompts", rounds);
+      const prompts = [...custom.map((text) => ({ text })), ...fetched]
+        .slice(0, rounds)
+        .sort(() => Math.random() - 0.5);
       ctx.commit({
-        state: {
+        state: (s) => ({
+          ...s,
           prompts,
           round: 0,
           submissions: {},
           votes: {},
           scores: {},
           shuffle: [],
-          timerEnd: Date.now() + WRITE_SECONDS * 1000,
-          timerTotal: WRITE_SECONDS * 1000,
-        },
+          timerEnd: Date.now() + writeSeconds * 1000,
+          timerTotal: writeSeconds * 1000,
+        }),
       });
     })();
   }, [isHost, phase, state.prompts, ctx]);
@@ -68,7 +79,7 @@ function HotTakes({ ctx }: GameProps) {
           return;
         }
         ctx.commit({
-          state: { ...s, round, submissions: {}, votes: {}, shuffle: [], timerEnd: Date.now() + WRITE_SECONDS * 1000, timerTotal: WRITE_SECONDS * 1000 },
+          state: { ...s, round, submissions: {}, votes: {}, shuffle: [], ...nextTimer(snap.state) },
           phase: "WRITE",
         });
         return;
@@ -106,7 +117,7 @@ function HotTakes({ ctx }: GameProps) {
         return;
       }
       ctx.commit({
-        state: { ...s, round, submissions: {}, votes: {}, shuffle: [], timerEnd: Date.now() + WRITE_SECONDS * 1000, timerTotal: WRITE_SECONDS * 1000 },
+        state: { ...s, round, submissions: {}, votes: {}, shuffle: [], ...nextTimer(snap.state) },
         phase: "WRITE",
       });
     }
@@ -243,6 +254,18 @@ export const hotTakesModule: GameModule = {
   themeColor: "#d96bff",
   icon: "🌶️",
   phases: ["WRITE", "VOTE", "REVEAL", "RESULTS"],
+  settings: [
+    { key: "rounds", label: "Runden", type: "number", min: 3, max: 10, default: 5 },
+    { key: "seconds", label: "Schreibzeit", type: "number", min: 30, max: 120, step: 15, default: 60, unit: "s" },
+    {
+      key: "customPrompts",
+      label: "Eigene Fragen (optional)",
+      type: "tags",
+      default: [],
+      placeholder: "z.B. Der schlechteste Bandname wäre…",
+      help: "Eure Fragen kommen garantiert dran, der Rest wird aufgefüllt.",
+    },
+  ],
   component: HotTakes,
   threeScene: { id: "floaters", payload: { items: ["🌶️", "🔥", "💯"], colors: ["#d96bff", "#ff5c4d"], density: 20 } },
 };

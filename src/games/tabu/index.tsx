@@ -5,9 +5,8 @@ import { motion } from "framer-motion";
 import { Button, Chip, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, SharedTimer, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
-const TURN_SECONDS = 60;
-const TURNS_PER_TEAM = 3;
 
 interface TabuWord {
   word: string;
@@ -37,11 +36,12 @@ function TabuGame({ ctx }: GameProps) {
     if (!isHost || phase !== "TURN" || state.teams || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const pool = await ctx.fetchContent<TabuWord>("tabu_words", 120);
+      const pool = await ctx.fetchContent<TabuWord>("tabu_words", 126);
       const shuffled = [...players.map((p) => p.id)].sort(() => Math.random() - 0.5);
       const half = Math.ceil(shuffled.length / 2);
       ctx.commit({
-        state: {
+        state: (s) => ({
+          ...s,
           teams: { A: shuffled.slice(0, half), B: shuffled.slice(half) },
           pool,
           wordIndex: 0,
@@ -50,7 +50,7 @@ function TabuGame({ ctx }: GameProps) {
           turnCount: 0,
           teamScores: { A: 0, B: 0 },
           turnActive: false,
-        },
+        }),
       });
     })();
   }, [isHost, phase, state.teams, players, ctx]);
@@ -59,10 +59,13 @@ function TabuGame({ ctx }: GameProps) {
     const s = snap.state as TabuState;
     if (!s.teams) return;
     const explainerId = s.teams[s.activeTeam][s.explainerIndex[s.activeTeam] % s.teams[s.activeTeam].length];
+    const turnsPerTeam = setting(snap.state, "turns", 3);
+    const turnSeconds = setting(snap.state, "seconds", 60);
+    const skipPenalty = setting(snap.state, "skipPenalty", false);
 
     const endTurn = () => {
       const turnCount = s.turnCount + 1;
-      if (turnCount >= TURNS_PER_TEAM * 2) {
+      if (turnCount >= turnsPerTeam * 2) {
         const winningTeam = s.teamScores.A > s.teamScores.B ? "A" : s.teamScores.B > s.teamScores.A ? "B" : null;
         const winners = winningTeam ? s.teams[winningTeam] : [];
         const scores: Record<string, number> = {};
@@ -91,7 +94,7 @@ function TabuGame({ ctx }: GameProps) {
     }
     if (action.type === "start-turn" && action.from === explainerId && !s.turnActive) {
       ctx.commit({
-        state: { ...s, turnActive: true, timerEnd: Date.now() + TURN_SECONDS * 1000, timerTotal: TURN_SECONDS * 1000 },
+        state: { ...s, turnActive: true, timerEnd: Date.now() + turnSeconds * 1000, timerTotal: turnSeconds * 1000 },
       });
     }
     if (!s.turnActive) return;
@@ -108,7 +111,13 @@ function TabuGame({ ctx }: GameProps) {
       });
     }
     if (action.type === "skip" && action.from === explainerId) {
-      ctx.commit({ state: { ...s, wordIndex: s.wordIndex + 1 } });
+      ctx.commit({
+        state: {
+          ...s,
+          wordIndex: s.wordIndex + 1,
+          ...(skipPenalty ? { teamScores: { ...s.teamScores, [s.activeTeam]: s.teamScores[s.activeTeam] - 1 } } : {}),
+        },
+      });
     }
     // Gegnerteam buzzert bei Tabu-Verstoß: -1 und nächstes Wort
     if (action.type === "tabu-buzz" && s.teams[s.activeTeam === "A" ? "B" : "A"].includes(action.from)) {
@@ -151,13 +160,13 @@ function TabuGame({ ctx }: GameProps) {
       <PhaseHeader
         icon="🤫"
         title={iExplain ? "Du erklärst!" : `${explainer?.username} erklärt für Team ${state.activeTeam}`}
-        subtitle={`Zug ${state.turnCount + 1} von ${TURNS_PER_TEAM * 2}`}
+        subtitle={`Zug ${state.turnCount + 1} von ${setting(ctx.state, "turns", 3) * 2}`}
       />
 
       {!state.turnActive ? (
         <div className="text-center">
           {iExplain ? (
-            <Button size="lg" onClick={() => ctx.send("start-turn")}>⏱️ Runde starten ({TURN_SECONDS}s)</Button>
+            <Button size="lg" onClick={() => ctx.send("start-turn")}>⏱️ Runde starten ({setting(ctx.state, "seconds", 60)}s)</Button>
           ) : (
             <Chip className="mx-auto">Warte, bis {explainer?.username} startet…</Chip>
           )}
@@ -216,6 +225,11 @@ export const tabuModule: GameModule = {
   themeColor: "#ff9f4d",
   icon: "🤫",
   phases: ["TURN", "RESULTS"],
+  settings: [
+    { key: "seconds", label: "Zeit pro Zug", type: "number", min: 30, max: 120, step: 15, default: 60, unit: "s" },
+    { key: "turns", label: "Züge pro Team", type: "number", min: 2, max: 6, default: 3 },
+    { key: "skipPenalty", label: "Skip kostet einen Punkt", type: "toggle", default: false },
+  ],
   component: TabuGame,
   threeScene: { id: "floaters", payload: { items: ["🤫", "🚫", "💬"], colors: ["#ff9f4d", "#ff5c4d"], density: 22 } },
 };

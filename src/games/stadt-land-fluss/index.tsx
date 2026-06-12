@@ -14,10 +14,10 @@ import {
   useHostActions,
 } from "../kit";
 import type { GameModule, GameProps, GameState } from "../types";
+import { setting } from "../types";
 
 const LETTERS = "ABCDEFGHIJKLMNOPRSTUVWZ";
-const TOTAL_ROUNDS = 3;
-const ROUND_SECONDS = 90;
+const DEFAULT_CATEGORIES = ["Stadt", "Land", "Fluss", "Name", "Tier", "Beruf"];
 /** Klassische Regel: Nach "Stopp!" haben alle anderen noch kurz Zeit, den Stift fallen zu lassen. */
 const STOP_GRACE_MS = 3000;
 
@@ -87,14 +87,25 @@ function newRound(s: SlfState | GameState, categories: string[], round: number):
     submitted: [],
     stoppedBy: null,
     roundDone: false,
-    ...timerFields(ROUND_SECONDS),
+    ...timerFields(setting(s, "seconds", 90)),
   };
+}
+
+/** Kategorien je nach Lobby-Einstellung: eigene Liste oder zufällig aus dem Pool. */
+async function pickCategories(ctx: GameProps["ctx"]): Promise<string[]> {
+  const mode = setting<string>(ctx.state, "mode", "random");
+  const custom = setting<string[]>(ctx.state, "categories", DEFAULT_CATEGORIES);
+  if (mode === "custom" && custom.length >= 2) return custom.slice(0, 8);
+  const count = Math.min(Math.max(custom.length, 5), 8);
+  const cats = await ctx.fetchContent<{ name: string }>("slf_categories", count);
+  return cats.map((c) => c.name);
 }
 
 function StadtLandFluss({ ctx }: GameProps) {
   const state = ctx.state as SlfState;
   const { phase, self, isHost, players } = ctx;
-  const [inputs, setInputs] = useState<string[]>(() => Array(5).fill(""));
+  const totalRounds = setting(ctx.state, "rounds", 3);
+  const [inputs, setInputs] = useState<string[]>(() => Array(8).fill(""));
   const [localSubmitted, setLocalSubmitted] = useState(false);
   const initRef = useRef(false);
   const graceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,9 +115,9 @@ function StadtLandFluss({ ctx }: GameProps) {
     if (!isHost || phase !== "WRITE" || state.letter || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const cats = await ctx.fetchContent<{ name: string }>("slf_categories", 5);
+      const cats = await pickCategories(ctx);
       ctx.commit({
-        state: (s) => ({ ...newRound(s, cats.map((c) => c.name), 1), answers: {}, scores: {} }),
+        state: (s) => ({ ...newRound(s, cats, 1), answers: {}, scores: {} }),
       });
     })();
   }, [isHost, phase, state.letter, ctx]);
@@ -115,7 +126,7 @@ function StadtLandFluss({ ctx }: GameProps) {
   const [prevRound, setPrevRound] = useState(state.round ?? 0);
   if (prevRound !== (state.round ?? 0)) {
     setPrevRound(state.round ?? 0);
-    setInputs(Array(state.categories?.length ?? 5).fill(""));
+    setInputs(Array(state.categories?.length ?? 8).fill(""));
     setLocalSubmitted(false);
   }
 
@@ -197,14 +208,14 @@ function StadtLandFluss({ ctx }: GameProps) {
   // Host: nächste Runde / Spielende
   const nextRound = async () => {
     const s = ctx.state as SlfState;
-    if (s.round >= TOTAL_ROUNDS) {
+    if (s.round >= totalRounds) {
       const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
       ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
       return;
     }
-    const cats = await ctx.fetchContent<{ name: string }>("slf_categories", 5);
+    const cats = await pickCategories(ctx);
     ctx.commit({
-      state: (cur) => newRound(cur, cats.map((c) => c.name), (cur as SlfState).round + 1),
+      state: (cur) => newRound(cur, cats, (cur as SlfState).round + 1),
       phase: "WRITE",
     });
   };
@@ -221,7 +232,7 @@ function StadtLandFluss({ ctx }: GameProps) {
         <PhaseHeader
           icon="✍️"
           title={`Buchstabe: ${state.letter}`}
-          subtitle={`Runde ${state.round} von ${TOTAL_ROUNDS} – wer zuerst fertig ist, drückt Stopp!`}
+          subtitle={`Runde ${state.round} von ${totalRounds} – wer zuerst fertig ist, drückt Stopp!`}
         />
         <div className="mb-4 flex flex-col items-center gap-2">
           <SharedTimer ctx={ctx} color="#4dc9ff" size={90} onDone={() => ctx.send("stop")} />
@@ -262,7 +273,7 @@ function StadtLandFluss({ ctx }: GameProps) {
   if (phase === "REVIEW") {
     const roundAnswers = state.answers?.[String(state.round)] ?? {};
     const { detail } = scoreRound(roundAnswers, state.letter, state.categories);
-    const isLast = state.round >= TOTAL_ROUNDS;
+    const isLast = state.round >= totalRounds;
     return (
       <div className="mx-auto max-w-2xl px-4 pt-6">
         <PhaseHeader
@@ -325,6 +336,28 @@ export const stadtLandFlussModule: GameModule = {
   themeColor: "#4dc9ff",
   icon: "🌍",
   phases: ["WRITE", "REVIEW", "RESULTS"],
+  settings: [
+    {
+      key: "mode",
+      label: "Kategorien",
+      type: "select",
+      options: [
+        { value: "random", label: "🎲 Zufällig aus dem Pool" },
+        { value: "custom", label: "✏️ Eigene Liste" },
+      ],
+      default: "random",
+    },
+    {
+      key: "categories",
+      label: "Eigene Kategorien (bei „Eigene Liste“)",
+      type: "tags",
+      default: ["Stadt", "Land", "Fluss", "Name", "Tier", "Beruf"],
+      placeholder: "z.B. Pokémon, Kneipe, Ausrede…",
+      help: "2–8 Kategorien. Bei „Zufällig“ bestimmt die Anzahl, wie viele gezogen werden.",
+    },
+    { key: "rounds", label: "Runden", type: "number", min: 1, max: 10, default: 3 },
+    { key: "seconds", label: "Zeit pro Runde", type: "number", min: 30, max: 180, step: 15, default: 90, unit: "s" },
+  ],
   component: StadtLandFluss,
   threeScene: {
     id: "floaters",

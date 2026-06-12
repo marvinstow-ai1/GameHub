@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, Button, Chip, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, PlayerVote, SharedTimer, WaitingFor, clearedTimer, timerFields, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
 type Role = "werwolf" | "seherin" | "hexe" | "dorf";
 
@@ -33,16 +34,19 @@ const ROLE_INFO: Record<Role, { name: string; icon: string; desc: string }> = {
   dorf: { name: "Dorfbewohner", icon: "🏡", desc: "Finde die Werwölfe und stimme sie tagsüber an den Galgen." },
 };
 
-function assignRoles(playerIds: string[]): Record<string, Role> {
+function assignRoles(
+  playerIds: string[],
+  opts: { wolves: number; seherin: boolean; hexe: boolean }
+): Record<string, Role> {
   const shuffled = [...playerIds].sort(() => Math.random() - 0.5);
   const roles: Record<string, Role> = {};
-  const wolves = Math.max(1, Math.floor(shuffled.length / 4));
-  shuffled.forEach((id, i) => {
-    if (i < wolves) roles[id] = "werwolf";
-    else if (i === wolves) roles[id] = "seherin";
-    else if (i === wolves + 1 && shuffled.length >= 7) roles[id] = "hexe";
-    else roles[id] = "dorf";
-  });
+  // Es muss immer mehr Dorf als Wölfe geben, sonst ist das Spiel sofort vorbei
+  const wolves = Math.min(opts.wolves, Math.max(1, Math.ceil(shuffled.length / 2) - 1));
+  let cursor = 0;
+  for (let i = 0; i < wolves; i++) roles[shuffled[cursor++]] = "werwolf";
+  if (opts.seherin && cursor < shuffled.length) roles[shuffled[cursor++]] = "seherin";
+  if (opts.hexe && cursor < shuffled.length) roles[shuffled[cursor++]] = "hexe";
+  while (cursor < shuffled.length) roles[shuffled[cursor++]] = "dorf";
   return roles;
 }
 
@@ -89,14 +93,21 @@ function Werwolf({ ctx }: GameProps) {
   useEffect(() => {
     if (!isHost || phase !== "ROLES" || state.roles || initRef.current) return;
     initRef.current = true;
+    const wolvesSetting = setting<string>(ctx.state, "wolves", "auto");
+    const wolves = wolvesSetting === "auto" ? Math.max(1, Math.floor(players.length / 4)) : parseInt(wolvesSetting);
     ctx.commit({
-      state: {
-        roles: assignRoles(players.map((p) => p.id)),
+      state: (s) => ({
+        ...s,
+        roles: assignRoles(players.map((p) => p.id), {
+          wolves,
+          seherin: setting(s, "seherin", true),
+          hexe: setting(s, "hexe", true) && players.length >= 6,
+        }),
         alive: players.map((p) => p.id),
         round: 1,
         wolfVotes: {},
         dayVotes: {},
-      },
+      }),
     });
   }, [isHost, phase, state.roles, players, ctx]);
 
@@ -212,7 +223,7 @@ function Werwolf({ ctx }: GameProps) {
       await ctx.commit({ state: next });
       ctx.endGame(win.winners);
     } else {
-      ctx.commit({ state: { ...next, ...timerFields(120) }, phase: "DAY_DISCUSS" });
+      ctx.commit({ state: { ...next, ...timerFields(setting(ctx.state, "discussSeconds", 120)) }, phase: "DAY_DISCUSS" });
     }
   };
 
@@ -461,6 +472,23 @@ export const werwolfModule: GameModule = {
   themeColor: "#8b7cff",
   icon: "🐺",
   phases: ["ROLES", "NIGHT_WOLVES", "NIGHT_SEER", "NIGHT_WITCH", "DAY_REVEAL", "DAY_DISCUSS", "DAY_VOTE", "LYNCH_REVEAL", "RESULTS"],
+  settings: [
+    {
+      key: "wolves",
+      label: "Anzahl Werwölfe",
+      type: "select",
+      options: [
+        { value: "auto", label: "🤖 Automatisch (¼ der Spieler)" },
+        { value: "1", label: "1" },
+        { value: "2", label: "2" },
+        { value: "3", label: "3" },
+      ],
+      default: "auto",
+    },
+    { key: "seherin", label: "🔮 Seherin im Spiel", type: "toggle", default: true },
+    { key: "hexe", label: "🧪 Hexe im Spiel (ab 6 Spielern)", type: "toggle", default: true },
+    { key: "discussSeconds", label: "Diskussionszeit", type: "number", min: 60, max: 300, step: 30, default: 120, unit: "s" },
+  ],
   component: Werwolf,
   threeScene: { id: "werwolf" },
 };

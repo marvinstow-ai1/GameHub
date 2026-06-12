@@ -5,40 +5,50 @@ import { motion } from "framer-motion";
 import { Button, Input, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
-const STATEMENTS_PER_PLAYER = 3;
-const BOARD = 4; // 4x4
 
 interface BingoState {
   pool: string[];
   submitted: string[];
-  /** boards[uid] = 16 Statements */
+  /** Kantenlänge des Boards (3/4/5) – beim Start eingefroren */
+  size: number;
   boards: Record<string, string[]>;
-  /** marks[uid] = bool[16] */
   marks: Record<string, boolean[]>;
   [key: string]: unknown;
 }
 
-function hasBingo(marks: boolean[]): boolean {
-  for (let r = 0; r < BOARD; r++) {
-    if (Array.from({ length: BOARD }, (_, c) => marks[r * BOARD + c]).every(Boolean)) return true;
-    if (Array.from({ length: BOARD }, (_, c) => marks[c * BOARD + r]).every(Boolean)) return true;
+function hasBingo(marks: boolean[], size: number): boolean {
+  for (let r = 0; r < size; r++) {
+    if (Array.from({ length: size }, (_, c) => marks[r * size + c]).every(Boolean)) return true;
+    if (Array.from({ length: size }, (_, c) => marks[c * size + r]).every(Boolean)) return true;
   }
-  if (Array.from({ length: BOARD }, (_, i) => marks[i * BOARD + i]).every(Boolean)) return true;
-  if (Array.from({ length: BOARD }, (_, i) => marks[i * BOARD + (BOARD - 1 - i)]).every(Boolean)) return true;
+  if (Array.from({ length: size }, (_, i) => marks[i * size + i]).every(Boolean)) return true;
+  if (Array.from({ length: size }, (_, i) => marks[i * size + (size - 1 - i)]).every(Boolean)) return true;
   return false;
 }
 
 function CustomBingo({ ctx }: GameProps) {
   const state = ctx.state as BingoState;
   const { phase, self, isHost, players } = ctx;
-  const [inputs, setInputs] = useState<string[]>(Array(STATEMENTS_PER_PLAYER).fill(""));
+  const perPlayer = setting(ctx.state, "perPlayer", 3);
+  const size = state.size ?? parseInt(setting(ctx.state, "boardSize", "4"));
+  const [inputs, setInputs] = useState<string[]>(() => Array(perPlayer).fill(""));
   const initRef = useRef(false);
 
   useEffect(() => {
     if (!isHost || phase !== "COLLECT" || state.pool || initRef.current) return;
     initRef.current = true;
-    ctx.commit({ state: { pool: [], submitted: [], boards: {}, marks: {} } });
+    ctx.commit({
+      state: (s) => ({
+        ...s,
+        pool: [],
+        submitted: [],
+        size: parseInt(setting(s, "boardSize", "4")),
+        boards: {},
+        marks: {},
+      }),
+    });
   }, [isHost, phase, state.pool, ctx]);
 
   useHostActions(ctx, async (action, snap) => {
@@ -48,7 +58,8 @@ function CustomBingo({ ctx }: GameProps) {
     const buildBoards = async (pool: string[], submitted: string[]) => {
       // Pool ggf. mit Seed-Statements auffüllen und Boards bauen
       let fullPool = [...new Set(pool)];
-      const need = BOARD * BOARD;
+      const boardSize = s.size ?? 4;
+      const need = boardSize * boardSize;
       if (fullPool.length < need) {
         const extra = await ctx.fetchContent<{ text: string }>("bingo_statements", need * 2);
         fullPool = [...new Set([...fullPool, ...extra.map((e) => e.text)])];
@@ -82,7 +93,7 @@ function CustomBingo({ ctx }: GameProps) {
     }
     if (action.type === "claim" && snap.phase === "PLAY") {
       const myMarks = s.marks[action.from] ?? [];
-      if (hasBingo(myMarks)) {
+      if (hasBingo(myMarks, s.size ?? 4)) {
         ctx.endGame([action.from]);
       }
     }
@@ -99,7 +110,7 @@ function CustomBingo({ ctx }: GameProps) {
         <PhaseHeader
           icon="🎱"
           title="Aussagen sammeln"
-          subtitle={`Schreib ${STATEMENTS_PER_PLAYER} Dinge, die heute Abend passieren könnten („X verschüttet was“)`}
+          subtitle={`Schreib ${perPlayer} Dinge, die heute Abend passieren könnten („X verschüttet was“)`}
         />
         <div className="flex flex-col gap-3">
           {inputs.map((value, i) => (
@@ -136,11 +147,11 @@ function CustomBingo({ ctx }: GameProps) {
   if (phase === "PLAY") {
     const board = state.boards?.[self.id] ?? [];
     const marks = state.marks?.[self.id] ?? [];
-    const canClaim = hasBingo(marks);
+    const canClaim = hasBingo(marks, size);
     return (
       <div className="mx-auto max-w-lg px-4 pt-6">
-        <PhaseHeader icon="🎱" title="Dein Bingo-Board" subtitle="Markiere, was passiert – 4 in einer Reihe = BINGO!" />
-        <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+        <PhaseHeader icon="🎱" title="Dein Bingo-Board" subtitle={`Markiere, was passiert – ${size} in einer Reihe = BINGO!`} />
+        <div className="grid gap-1.5 sm:gap-2" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
           {board.map((statement, i) => (
             <motion.button
               key={i}
@@ -168,8 +179,8 @@ function CustomBingo({ ctx }: GameProps) {
             .map((p) => (
               <Panel key={p.id} className="p-3">
                 <p className="mb-1 truncate text-xs font-bold">{p.username}</p>
-                <div className="grid grid-cols-4 gap-0.5">
-                  {(state.marks?.[p.id] ?? Array(16).fill(false)).map((m: boolean, i: number) => (
+                <div className="grid gap-0.5" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+                  {(state.marks?.[p.id] ?? Array(size * size).fill(false)).map((m: boolean, i: number) => (
                     <span key={i} className={cn("aspect-square rounded-sm", m ? "bg-[var(--accent)]" : "bg-[var(--bg-3)]")} />
                   ))}
                 </div>
@@ -192,6 +203,20 @@ export const customBingoModule: GameModule = {
   themeColor: "#58d68d",
   icon: "🎱",
   phases: ["COLLECT", "PLAY", "RESULTS"],
+  settings: [
+    {
+      key: "boardSize",
+      label: "Board-Größe",
+      type: "select",
+      options: [
+        { value: "3", label: "3×3 (schnell)" },
+        { value: "4", label: "4×4 (klassisch)" },
+        { value: "5", label: "5×5 (episch)" },
+      ],
+      default: "4",
+    },
+    { key: "perPlayer", label: "Aussagen pro Spieler", type: "number", min: 1, max: 5, default: 3 },
+  ],
   component: CustomBingo,
   threeScene: { id: "floaters", payload: { items: ["🎱", "✓", "B", "I", "N", "G", "O"], colors: ["#58d68d", "#c8f135"], density: 26 } },
 };

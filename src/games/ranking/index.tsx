@@ -5,8 +5,7 @@ import { motion } from "framer-motion";
 import { Avatar, Button, Panel } from "@/components/ui";
 import { HostEscape, PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
-
-const TOTAL_ROUNDS = 5;
+import { setting } from "../types";
 
 interface RankState {
   prompts: { text: string }[];
@@ -44,8 +43,13 @@ function RankingBattle({ ctx }: GameProps) {
     if (!isHost || phase !== "RANK" || state.prompts || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const prompts = await ctx.fetchContent<{ text: string }>("ranking_prompts", TOTAL_ROUNDS);
-      ctx.commit({ state: { prompts, round: 0, rankings: {}, scores: {} } });
+      const rounds = setting(ctx.state, "rounds", 5);
+      const custom = setting<string[]>(ctx.state, "customPrompts", []).map((t) => t.trim()).filter(Boolean);
+      const fetched = await ctx.fetchContent<{ text: string }>("ranking_prompts", rounds);
+      const prompts = [...custom.map((text) => ({ text })), ...fetched]
+        .slice(0, rounds)
+        .sort(() => Math.random() - 0.5);
+      ctx.commit({ state: (s) => ({ ...s, prompts, round: 0, rankings: {}, scores: {} }) });
     })();
   }, [isHost, phase, state.prompts, ctx]);
 
@@ -206,6 +210,17 @@ export const rankingModule: GameModule = {
   themeColor: "#f4b63f",
   icon: "🏆",
   phases: ["RANK", "REVEAL", "RESULTS"],
+  settings: [
+    { key: "rounds", label: "Runden", type: "number", min: 3, max: 10, default: 5 },
+    {
+      key: "customPrompts",
+      label: "Eigene Fragen (optional)",
+      type: "tags",
+      default: [],
+      placeholder: "Wer würde am ehesten…?",
+      help: "Eure Fragen kommen garantiert dran, der Rest wird aufgefüllt.",
+    },
+  ],
   component: RankingBattle,
   threeScene: { id: "floaters", payload: { items: ["🥇", "🥈", "🥉", "📊"], colors: ["#f4b63f", "#c8f135"], density: 20 } },
 };

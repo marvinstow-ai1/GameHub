@@ -5,8 +5,8 @@ import { motion } from "framer-motion";
 import { Avatar, Button, Chip, Panel } from "@/components/ui";
 import { HostEscape, PhaseHeader, ScoreStrip, SharedTimer, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
-const DARE_SECONDS = 90;
 
 interface TdPrompt {
   kind: "truth" | "dare";
@@ -34,9 +34,11 @@ function WahrheitPflicht({ ctx }: GameProps) {
     if (!isHost || phase !== "CHOOSE" || state.order || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const prompts = await ctx.fetchContent<TdPrompt>("td_prompts", 120);
+      const maxSpice = parseInt(setting(ctx.state, "spice", "2"));
+      const prompts = (await ctx.fetchContent<TdPrompt>("td_prompts", 220)).filter((p) => p.spice <= maxSpice);
       ctx.commit({
-        state: {
+        state: (s) => ({
+          ...s,
           order: [...players.map((p) => p.id)].sort(() => Math.random() - 0.5),
           turn: 0,
           pool: {
@@ -45,7 +47,7 @@ function WahrheitPflicht({ ctx }: GameProps) {
           },
           scores: {},
           current: null,
-        },
+        }),
       });
     })();
   }, [isHost, phase, state.order, players, ctx]);
@@ -68,12 +70,13 @@ function WahrheitPflicht({ ctx }: GameProps) {
       const prompt = pool[kind].shift();
       if (!prompt) return;
       const isDare = kind === "dare";
+      const dareSeconds = setting(snap.state, "dareSeconds", 90);
       ctx.commit({
         state: {
           ...s,
           pool,
           current: { kind, text: prompt.text },
-          ...(isDare ? { timerEnd: Date.now() + DARE_SECONDS * 1000, timerTotal: DARE_SECONDS * 1000 } : { timerEnd: undefined, timerTotal: undefined }),
+          ...(isDare ? { timerEnd: Date.now() + dareSeconds * 1000, timerTotal: dareSeconds * 1000 } : { timerEnd: undefined, timerTotal: undefined }),
         },
         phase: "DOING",
       });
@@ -197,6 +200,20 @@ export const wahrheitPflichtModule: GameModule = {
   themeColor: "#ff6bb5",
   icon: "🍾",
   phases: ["CHOOSE", "DOING", "RESULTS"],
+  settings: [
+    {
+      key: "spice",
+      label: "Schärfegrad",
+      type: "select",
+      options: [
+        { value: "1", label: "😇 Entspannt" },
+        { value: "2", label: "🌶️ Würzig" },
+        { value: "3", label: "🔥 Heiß" },
+      ],
+      default: "2",
+    },
+    { key: "dareSeconds", label: "Pflicht-Timer", type: "number", min: 30, max: 180, step: 15, default: 90, unit: "s" },
+  ],
   component: WahrheitPflicht,
   threeScene: { id: "floaters", payload: { items: ["💬", "🔥", "🍾"], colors: ["#ff6bb5", "#ff5c4d"], density: 20 } },
 };

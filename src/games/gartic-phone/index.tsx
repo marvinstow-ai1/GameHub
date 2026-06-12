@@ -63,11 +63,12 @@ function GarticPhone({ ctx }: GameProps) {
     if (!isHost || phase !== "WORK" || state.order || initRef.current) return;
     initRef.current = true;
     ctx.commit({
-      state: {
+      state: (s) => ({
+        ...s,
         order: [...players.map((p) => p.id)].sort(() => Math.random() - 0.5),
         step: 0,
         chains: players.map(() => []),
-      },
+      }),
     });
   }, [isHost, phase, state.order, players, ctx]);
 
@@ -195,6 +196,18 @@ function GarticPhone({ ctx }: GameProps) {
                   onChange={(e) => setText(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && text.trim() && submit()}
                 />
+                {isPromptStep && (
+                  <Button
+                    variant="ghost"
+                    aria-label="Zufalls-Prompt"
+                    onClick={async () => {
+                      const [idea] = await ctx.fetchContent<{ text: string }>("gartic_prompts", 1);
+                      if (idea) setText(idea.text);
+                    }}
+                  >
+                    🎲
+                  </Button>
+                )}
                 <Button disabled={!text.trim()} onClick={submit}>Senden</Button>
               </div>
             )}

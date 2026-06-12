@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Button, Chip, Input, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
 type CardColor = "red" | "blue" | "neutral" | "assassin";
 
@@ -44,15 +45,20 @@ function Codenames({ ctx }: GameProps) {
     if (!isHost || phase !== "PLAY" || state.words || initRef.current) return;
     initRef.current = true;
     (async () => {
+      const custom = setting<string[]>(ctx.state, "customWords", []).map((w) => w.trim()).filter(Boolean);
       const rows = await ctx.fetchContent<{ word: string }>("codenames_words", 25);
+      const words = [...new Set([...custom, ...rows.map((r) => r.word)])]
+        .slice(0, 25)
+        .sort(() => Math.random() - 0.5);
       const shuffled = [...players.map((p) => p.id)].sort(() => Math.random() - 0.5);
       const half = Math.ceil(shuffled.length / 2);
       const red = shuffled.slice(0, half);
       const blue = shuffled.slice(half);
       const { colors } = buildBoard();
       ctx.commit({
-        state: {
-          words: rows.map((r) => r.word),
+        state: (s) => ({
+          ...s,
+          words,
           colors,
           revealed: Array(25).fill(false),
           teams: { red, blue },
@@ -60,7 +66,7 @@ function Codenames({ ctx }: GameProps) {
           turn: "red",
           clue: null,
           guessesLeft: 0,
-        },
+        }),
       });
     })();
   }, [isHost, phase, state.words, players, ctx]);
@@ -226,6 +232,16 @@ export const codenamesModule: GameModule = {
   themeColor: "#5ee0e6",
   icon: "🕵️",
   phases: ["PLAY", "RESULTS"],
+  settings: [
+    {
+      key: "customWords",
+      label: "Eigene Wörter (optional)",
+      type: "tags",
+      default: [],
+      placeholder: "z.B. Insider, Spitznamen…",
+      help: "Eure Wörter landen garantiert auf dem Board, der Rest wird aufgefüllt.",
+    },
+  ],
   component: Codenames,
   threeScene: { id: "floaters", payload: { items: ["🕵️", "🔴", "🔵", "■"], colors: ["#5ee0e6", "#ff5c4d", "#4dc9ff"], density: 22 } },
 };

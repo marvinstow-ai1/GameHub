@@ -5,8 +5,7 @@ import { motion } from "framer-motion";
 import { Avatar, Button, Panel, cn } from "@/components/ui";
 import { HostEscape, PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
-
-const TOTAL_ROUNDS = 15;
+import { setting } from "../types";
 
 interface NhieState {
   prompts: { text: string }[];
@@ -26,8 +25,12 @@ function NeverHaveIEver({ ctx }: GameProps) {
     if (!isHost || phase !== "ANSWER" || state.prompts || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const prompts = await ctx.fetchContent<{ text: string }>("nhie_prompts", TOTAL_ROUNDS);
-      ctx.commit({ state: { prompts, index: 0, answers: {}, scores: {} } });
+      const rounds = setting(ctx.state, "rounds", 15);
+      const maxSpice = parseInt(setting(ctx.state, "spice", "3"));
+      const pool = (await ctx.fetchContent<{ text: string; spice: number }>("nhie_prompts", 150)).filter(
+        (q) => q.spice <= maxSpice
+      );
+      ctx.commit({ state: (s) => ({ ...s, prompts: pool.slice(0, rounds), index: 0, answers: {}, scores: {} }) });
     })();
   }, [isHost, phase, state.prompts, ctx]);
 
@@ -148,6 +151,20 @@ export const neverHaveIEverModule: GameModule = {
   themeColor: "#ff5c4d",
   icon: "🙊",
   phases: ["ANSWER", "REVEAL", "RESULTS"],
+  settings: [
+    { key: "rounds", label: "Anzahl Aussagen", type: "number", min: 5, max: 30, default: 15 },
+    {
+      key: "spice",
+      label: "Schärfegrad",
+      type: "select",
+      options: [
+        { value: "1", label: "😇 Entspannt" },
+        { value: "2", label: "🌶️ Würzig" },
+        { value: "3", label: "🔥 Alles rein" },
+      ],
+      default: "3",
+    },
+  ],
   component: NeverHaveIEver,
   threeScene: { id: "floaters", payload: { items: ["🙊", "😇", "🍹"], colors: ["#ff5c4d", "#ffc24d"], density: 20 } },
 };

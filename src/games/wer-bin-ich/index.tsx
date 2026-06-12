@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Avatar, Button, Chip, Input, Panel } from "@/components/ui";
 import { HostEscape, PhaseHeader, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
+import { setting } from "../types";
 
 interface WhoState {
   /** assigned[uid] = Charaktername (für uid selbst unsichtbar) */
@@ -32,17 +33,21 @@ function WerBinIch({ ctx }: GameProps) {
     if (!isHost || phase !== "TURN" || state.assigned || initRef.current) return;
     initRef.current = true;
     (async () => {
-      const chars = await ctx.fetchContent<{ name: string }>("whoami_characters", players.length);
+      const category = setting<string>(ctx.state, "category", "alle");
+      const pool = await ctx.fetchContent<{ name: string; category: string }>("whoami_characters", 200);
+      const filtered = category === "alle" ? pool : pool.filter((c) => c.category === category);
+      const chars = filtered.length >= players.length ? filtered : pool;
       const assigned: Record<string, string> = {};
       players.forEach((p, i) => (assigned[p.id] = chars[i % chars.length].name));
       ctx.commit({
-        state: {
+        state: (s) => ({
+          ...s,
           assigned,
           order: [...players.map((p) => p.id)].sort(() => Math.random() - 0.5),
           turn: 0,
           votes: {},
           solved: {},
-        },
+        }),
       });
     })();
   }, [isHost, phase, state.assigned, players, ctx]);
@@ -204,6 +209,26 @@ export const werBinIchModule: GameModule = {
   themeColor: "#ffc24d",
   icon: "🎭",
   phases: ["TURN", "RESULTS"],
+  settings: [
+    {
+      key: "category",
+      label: "Charaktere aus",
+      type: "select",
+      options: [
+        { value: "alle", label: "🌈 Alle" },
+        { value: "Promi", label: "⭐ Promis" },
+        { value: "Film", label: "🎬 Film" },
+        { value: "Musik", label: "🎤 Musik" },
+        { value: "Sport", label: "⚽ Sport" },
+        { value: "Cartoon", label: "📺 Cartoons" },
+        { value: "Märchen", label: "🏰 Märchen" },
+        { value: "Geschichte", label: "📜 Geschichte" },
+        { value: "Videospiel", label: "🎮 Games" },
+        { value: "Fantasie", label: "🦄 Fantasie" },
+      ],
+      default: "alle",
+    },
+  ],
   component: WerBinIch,
   threeScene: { id: "floaters", payload: { items: ["?", "🎭", "👤"], colors: ["#ffc24d", "#8b7cff"], density: 24 } },
 };
