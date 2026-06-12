@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button, Chip, Input, Panel } from "@/components/ui";
 import { supabase } from "@/lib/supabase";
-import { PhaseHeader, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 import { DrawingCanvas } from "./DrawingCanvas";
 
@@ -79,13 +79,12 @@ function GarticPhone({ ctx }: GameProps) {
     setSubmitted(false);
   }
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as GarticState;
-    if (action.type === "submit" && phase === "WORK") {
-      const { chain, entry } = action.data as { chain: number; entry: ChainEntry };
-      if (s.chains[chain]?.length !== s.step) return; // schon abgegeben
-      const chains = s.chains.map((c, i) => (i === chain ? [...c, entry] : c));
-      const allDone = chains.every((c) => c.length === s.step + 1);
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as GarticState;
+    if (!s.order) return;
+
+    const advanceIfDone = (chains: ChainEntry[][]) => {
+      const allDone = chains.every((c) => c.length >= s.step + 1);
       if (!allDone) {
         ctx.commit({ state: { ...s, chains } });
         return;
@@ -95,6 +94,29 @@ function GarticPhone({ ctx }: GameProps) {
         ctx.commit({ state: { ...s, chains, reveal: { chain: 0, upTo: 0 } }, phase: "REVEAL" });
       } else {
         ctx.commit({ state: { ...s, chains, step: nextStep } });
+      }
+    };
+
+    if (action.type === "submit" && snap.phase === "WORK") {
+      const { chain, entry } = action.data as { chain: number; entry: ChainEntry };
+      if (s.chains[chain]?.length !== s.step) return; // schon abgegeben
+      advanceIfDone(s.chains.map((c, i) => (i === chain ? [...c, entry] : c)));
+    }
+    if (action.type === "force-step" && snap.phase === "WORK") {
+      // fehlende Abgaben mit Platzhalter füllen, damit es weitergeht
+      const chains = s.chains.map((c) =>
+        c.length >= s.step + 1 ? c : [...c, { kind: "text", value: "(keine Abgabe 😴)", author: action.from } as ChainEntry]
+      );
+      advanceIfDone(chains);
+    }
+    if (action.type === "advance-reveal" && snap.phase === "REVEAL" && s.reveal) {
+      const r = s.reveal;
+      if (r.upTo + 1 < (s.chains[r.chain]?.length ?? 0)) {
+        ctx.commit({ state: { ...s, reveal: { ...r, upTo: r.upTo + 1 } } });
+      } else if (r.chain + 1 < s.chains.length) {
+        ctx.commit({ state: { ...s, reveal: { chain: r.chain + 1, upTo: 0 } } });
+      } else {
+        ctx.endGame(players.map((p) => p.id));
       }
     }
   });
@@ -111,7 +133,7 @@ function GarticPhone({ ctx }: GameProps) {
     const isPromptStep = state.step === 0;
     const iDraw = !isPromptStep && state.step % 2 === 1;
     const previous = chain[state.step - 1];
-    const doneIds = state.order.filter((uid) => (state.chains[chainForPlayer({ ...state, order: state.order } as GarticState, uid) ] ?? []).length > state.step);
+    const doneIds = state.order.filter((uid) => (state.chains[chainForPlayer(state, uid)] ?? []).length > state.step);
 
     const submit = async () => {
       if (submitted) return;
@@ -145,6 +167,7 @@ function GarticPhone({ ctx }: GameProps) {
             <div className="mt-3">
               <WaitingFor ctx={ctx} doneIds={iDone ? doneIds : [...doneIds, self.id]} />
             </div>
+            <HostEscape ctx={ctx} label="Schritt erzwingen (fehlende Abgaben überspringen)" action="force-step" />
           </Panel>
         ) : (
           <>
@@ -185,18 +208,6 @@ function GarticPhone({ ctx }: GameProps) {
   if (phase === "REVEAL" && state.reveal) {
     const { chain: chainIndex, upTo } = state.reveal;
     const chain = state.chains[chainIndex] ?? [];
-    const advance = () => {
-      const s = ctx.state as GarticState;
-      const r = s.reveal!;
-      if (r.upTo + 1 < (s.chains[r.chain]?.length ?? 0)) {
-        ctx.commit({ state: { ...s, reveal: { ...r, upTo: r.upTo + 1 } } });
-      } else if (r.chain + 1 < s.chains.length) {
-        ctx.commit({ state: { ...s, reveal: { chain: r.chain + 1, upTo: 0 } } });
-      } else {
-        ctx.endGame(players.map((p) => p.id));
-      }
-    };
-
     return (
       <div className="mx-auto max-w-lg px-4 pt-6">
         <PhaseHeader icon="🎬" title={`Kette ${chainIndex + 1} von ${state.chains.length}`} subtitle="Das große Aufdecken!" />
@@ -218,7 +229,7 @@ function GarticPhone({ ctx }: GameProps) {
           })}
         </div>
         {isHost ? (
-          <Button className="mt-6 w-full" onClick={advance}>Weiter →</Button>
+          <Button className="mt-6 w-full" onClick={() => ctx.send("advance-reveal")}>Weiter →</Button>
         ) : (
           <Chip className="mx-auto mt-6 flex w-fit">Der Host deckt auf…</Chip>
         )}

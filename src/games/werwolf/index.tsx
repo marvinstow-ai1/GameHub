@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, Button, Chip, Panel, cn } from "@/components/ui";
-import { PhaseHeader, PlayerVote, SharedTimer, WaitingFor, startTimer, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, PlayerVote, SharedTimer, WaitingFor, clearedTimer, timerFields, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 type Role = "werwolf" | "seherin" | "hexe" | "dorf";
@@ -100,61 +100,82 @@ function Werwolf({ ctx }: GameProps) {
     });
   }, [isHost, phase, state.roles, players, ctx]);
 
-  // Host: Phasen-Logik über Aktionen
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as WerwolfState;
-    if (action.type === "wolf-vote" && phase === "NIGHT_WOLVES") {
-      const wolfVotes = { ...s.wolfVotes, [action.from]: action.data as string };
-      const wolves = s.alive.filter((id) => s.roles[id] === "werwolf");
-      const allVoted = wolves.every((id) => wolfVotes[id]);
-      if (!allVoted) {
-        ctx.commit({ state: { ...s, wolfVotes } });
-        return;
-      }
-      // Mehrheitsopfer bestimmen
+  // Host: Phasen-Logik über Aktionen (seriell, immer frischer Snapshot)
+  const isOnline = (id: string) => players.find((p) => p.id === id)?.online ?? false;
+
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as WerwolfState;
+    if (!s.roles) return;
+
+    const resolveWolves = (wolfVotes: Record<string, string>) => {
       const tally: Record<string, number> = {};
       Object.values(wolfVotes).forEach((t) => (tally[t] = (tally[t] ?? 0) + 1));
-      const victim = Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
-      const seerAlive = s.alive.some((id) => s.roles[id] === "seherin");
+      const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+      const victim = sorted[0]?.[0];
+      const seerAlive = s.alive.some((id) => s.roles[id] === "seherin" && isOnline(id));
+      const witchAlive = s.alive.some((id) => s.roles[id] === "hexe" && isOnline(id));
       ctx.commit({
-        state: { ...s, wolfVotes, nightVictims: [victim], seerDone: false, witchDone: false },
-        phase: seerAlive ? "NIGHT_SEER" : s.alive.some((id) => s.roles[id] === "hexe") ? "NIGHT_WITCH" : "DAY_REVEAL",
+        state: { ...s, wolfVotes, nightVictims: victim ? [victim] : [] },
+        phase: seerAlive ? "NIGHT_SEER" : witchAlive ? "NIGHT_WITCH" : "DAY_REVEAL",
       });
+    };
+
+    if (action.type === "wolf-vote" && snap.phase === "NIGHT_WOLVES") {
+      if (s.roles[action.from] !== "werwolf" || !s.alive.includes(action.from)) return;
+      const wolfVotes = { ...s.wolfVotes, [action.from]: action.data as string };
+      const wolves = s.alive.filter((id) => s.roles[id] === "werwolf");
+      const allVoted = wolves.every((id) => wolfVotes[id] || !isOnline(id));
+      if (allVoted) resolveWolves(wolfVotes);
+      else ctx.commit({ state: { ...s, wolfVotes } });
     }
-    if (action.type === "seer-check" && phase === "NIGHT_SEER") {
-      const hexeAlive = s.alive.some((id) => s.roles[id] === "hexe");
-      ctx.commit({
-        state: { ...s, seerTarget: action.data as string, seerDone: true },
-        phase: hexeAlive ? "NIGHT_WITCH" : "DAY_REVEAL",
-      });
+    if (action.type === "force-night" && snap.phase === "NIGHT_WOLVES") {
+      resolveWolves(s.wolfVotes ?? {});
     }
-    if (action.type === "witch-act" && phase === "NIGHT_WITCH") {
+    if (action.type === "seer-check" && snap.phase === "NIGHT_SEER") {
+      if (s.roles[action.from] !== "seherin") return;
+      ctx.commit({ state: { ...s, seerTarget: action.data as string, seerDone: true } });
+    }
+    if ((action.type === "seer-done" || action.type === "force-night") && snap.phase === "NIGHT_SEER") {
+      const witchAlive = s.alive.some((id) => s.roles[id] === "hexe" && isOnline(id));
+      ctx.commit({ state: { ...s, seerTarget: null }, phase: witchAlive ? "NIGHT_WITCH" : "DAY_REVEAL" });
+    }
+    if (action.type === "witch-act" && snap.phase === "NIGHT_WITCH") {
+      if (s.roles[action.from] !== "hexe") return;
       const { heal, poison } = action.data as { heal: boolean; poison: string | null };
       let victims = [...(s.nightVictims ?? [])];
-      if (heal) victims = [];
-      if (poison) victims.push(poison);
+      if (heal && !s.witchHealUsed) victims = [];
+      if (poison && !s.witchPoisonUsed) victims.push(poison);
       ctx.commit({
         state: {
           ...s,
           nightVictims: victims,
           witchHealUsed: s.witchHealUsed || heal,
           witchPoisonUsed: s.witchPoisonUsed || !!poison,
-          witchDone: true,
         },
         phase: "DAY_REVEAL",
       });
     }
-    if (action.type === "day-vote" && phase === "DAY_VOTE") {
-      const dayVotes = { ...s.dayVotes, [action.from]: action.data as string };
-      const voters = s.alive;
-      if (!voters.every((id) => dayVotes[id])) {
+    if (action.type === "force-night" && snap.phase === "NIGHT_WITCH") {
+      ctx.commit({ state: { ...s }, phase: "DAY_REVEAL" });
+    }
+    if (action.type === "discuss-end" && snap.phase === "DAY_DISCUSS") {
+      ctx.commit({ state: { ...s, ...clearedTimer() }, phase: "DAY_VOTE" });
+    }
+    if ((action.type === "day-vote" || action.type === "force-tally") && snap.phase === "DAY_VOTE") {
+      const dayVotes =
+        action.type === "day-vote" && s.alive.includes(action.from)
+          ? { ...s.dayVotes, [action.from]: action.data as string }
+          : { ...s.dayVotes };
+      const allVoted = s.alive.every((id) => dayVotes[id] || !isOnline(id));
+      if (action.type === "day-vote" && !allVoted) {
         ctx.commit({ state: { ...s, dayVotes } });
         return;
       }
       const tally: Record<string, number> = {};
       Object.values(dayVotes).forEach((t) => (tally[t] = (tally[t] ?? 0) + 1));
       const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
-      const lynched = sorted.length > 1 && sorted[0][1] === sorted[1][1] ? null : sorted[0][0];
+      const lynched =
+        sorted.length === 0 || (sorted.length > 1 && sorted[0][1] === sorted[1][1]) ? null : sorted[0][0];
       const alive = lynched ? s.alive.filter((id) => id !== lynched) : s.alive;
       const next: WerwolfState = { ...s, dayVotes, lastLynched: lynched, alive };
       const win = checkWin(next);
@@ -167,25 +188,31 @@ function Werwolf({ ctx }: GameProps) {
     }
   });
 
-  // Host: Übergänge ohne Aktionen
+  // Host: Übergänge per Button (funktionale Commits gegen frischen State)
   const goNight = () => {
-    const s = ctx.state as WerwolfState;
     ctx.commit({
-      state: { ...s, round: s.round + 1, wolfVotes: {}, dayVotes: {}, nightVictims: [], seerTarget: null },
+      state: (cur) => ({
+        ...(cur as WerwolfState),
+        round: ((cur as WerwolfState).round ?? 1) + 1,
+        wolfVotes: {},
+        dayVotes: {},
+        nightVictims: [],
+        seerTarget: null,
+        ...clearedTimer(),
+      }),
       phase: "NIGHT_WOLVES",
     });
   };
-  const applyNight = () => {
+  const applyNight = async () => {
     const s = ctx.state as WerwolfState;
     const alive = s.alive.filter((id) => !(s.nightVictims ?? []).includes(id));
     const next = { ...s, alive };
     const win = checkWin(next);
     if (win) {
-      ctx.commit({ state: next });
+      await ctx.commit({ state: next });
       ctx.endGame(win.winners);
     } else {
-      startTimer(ctx, 120);
-      ctx.commit({ state: { ...next, timerEnd: Date.now() + 120_000, timerTotal: 120_000 }, phase: "DAY_DISCUSS" });
+      ctx.commit({ state: { ...next, ...timerFields(120) }, phase: "DAY_DISCUSS" });
     }
   };
 
@@ -231,6 +258,7 @@ function Werwolf({ ctx }: GameProps) {
         ) : (
           <p className="animate-pulse-soft text-center text-lg">Das Dorf schläft. 😴</p>
         )}
+        <HostEscape ctx={ctx} label="Nacht-Phase überspringen (Wölfe reagieren nicht)" action="force-night" />
       </div>
     );
   }
@@ -243,18 +271,24 @@ function Werwolf({ ctx }: GameProps) {
         <PhaseHeader icon="🔮" title="Die Seherin erwacht" subtitle={isSeer ? "Wessen Rolle willst du sehen?" : "…und blickt in die Seelen."} />
         {isSeer ? (
           state.seerTarget ? (
-            <Panel className="text-center">
-              <p className="text-3xl">{ROLE_INFO[state.roles[state.seerTarget]].icon}</p>
-              <p className="mt-2 font-bold">
-                {players.find((p) => p.id === state.seerTarget)?.username} ist {ROLE_INFO[state.roles[state.seerTarget]].name}
-              </p>
-            </Panel>
+            <>
+              <Panel className="text-center">
+                <p className="text-3xl">{ROLE_INFO[state.roles[state.seerTarget]].icon}</p>
+                <p className="mt-2 font-bold">
+                  {players.find((p) => p.id === state.seerTarget)?.username} ist {ROLE_INFO[state.roles[state.seerTarget]].name}
+                </p>
+              </Panel>
+              <Button className="mt-4 w-full" onClick={() => ctx.send("seer-done")}>
+                😴 Wieder einschlafen
+              </Button>
+            </>
           ) : (
             <PlayerVote ctx={ctx} candidates={alivePlayers.filter((p) => p.id !== self.id).map((p) => p.id)} onVote={(t) => ctx.send("seer-check", t)} />
           )
         ) : (
           <p className="animate-pulse-soft text-center text-lg">Das Dorf schläft. 😴</p>
         )}
+        <HostEscape ctx={ctx} label="Nacht-Phase überspringen (Seherin reagiert nicht)" action="force-night" />
       </div>
     );
   }
@@ -277,6 +311,7 @@ function Werwolf({ ctx }: GameProps) {
         ) : (
           <p className="animate-pulse-soft text-center text-lg">Das Dorf schläft. 😴</p>
         )}
+        <HostEscape ctx={ctx} label="Nacht-Phase überspringen (Hexe reagiert nicht)" action="force-night" />
       </div>
     );
   }
@@ -309,10 +344,10 @@ function Werwolf({ ctx }: GameProps) {
         {deadBanner}
         <PhaseHeader icon="☀️" title="Diskussion" subtitle="Wer ist verdächtig? Redet!" />
         <div className="flex justify-center">
-          <SharedTimer ctx={ctx} color="#8b7cff" onDone={() => ctx.commit({ phase: "DAY_VOTE" })} />
+          <SharedTimer ctx={ctx} color="#8b7cff" onDone={() => ctx.send("discuss-end")} />
         </div>
         {isHost && (
-          <Button variant="ghost" className="mt-6" onClick={() => ctx.commit({ phase: "DAY_VOTE" })}>
+          <Button variant="ghost" className="mt-6" onClick={() => ctx.send("discuss-end")}>
             Direkt abstimmen →
           </Button>
         )}
@@ -338,6 +373,7 @@ function Werwolf({ ctx }: GameProps) {
         <div className="mt-4">
           <WaitingFor ctx={ctx} doneIds={Object.keys(state.dayVotes ?? {})} label="Es fehlen" />
         </div>
+        <HostEscape ctx={ctx} label="Abstimmung jetzt auswerten" action="force-tally" />
       </div>
     );
   }

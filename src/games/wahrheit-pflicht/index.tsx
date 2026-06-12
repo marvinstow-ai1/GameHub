@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Avatar, Button, Chip, Panel } from "@/components/ui";
-import { PhaseHeader, ScoreStrip, SharedTimer, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, ScoreStrip, SharedTimer, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const DARE_SECONDS = 90;
@@ -50,12 +50,19 @@ function WahrheitPflicht({ ctx }: GameProps) {
     })();
   }, [isHost, phase, state.order, players, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as TdState;
-    const activeId = s.order?.[s.turn % s.order.length];
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as TdState;
+    if (!s.order) return;
+    const activeId = s.order[s.turn % s.order.length];
+
+    // Aktiver Spieler reagiert nicht mehr → Host kann überspringen
+    if (action.type === "force-skip-player") {
+      ctx.commit({ state: { ...s, turn: s.turn + 1, current: null, timerEnd: undefined, timerTotal: undefined }, phase: "CHOOSE" });
+      return;
+    }
     if (action.from !== activeId) return;
 
-    if (action.type === "choose" && phase === "CHOOSE") {
+    if (action.type === "choose" && snap.phase === "CHOOSE") {
       const kind = action.data as "truth" | "dare";
       const pool = { ...s.pool, [kind]: [...s.pool[kind]] };
       const prompt = pool[kind].shift();
@@ -71,10 +78,13 @@ function WahrheitPflicht({ ctx }: GameProps) {
         phase: "DOING",
       });
     }
-    if ((action.type === "done" || action.type === "skip") && phase === "DOING") {
+    if ((action.type === "done" || action.type === "skip") && snap.phase === "DOING") {
       const scores = { ...s.scores };
       if (action.type === "done") scores[activeId] = (scores[activeId] ?? 0) + 1;
-      ctx.commit({ state: { ...s, scores, turn: s.turn + 1, current: null }, phase: "CHOOSE" });
+      ctx.commit({
+        state: { ...s, scores, turn: s.turn + 1, current: null, timerEnd: undefined, timerTotal: undefined },
+        phase: "CHOOSE",
+      });
     }
   });
 
@@ -117,7 +127,10 @@ function WahrheitPflicht({ ctx }: GameProps) {
             </motion.button>
           </div>
         ) : (
-          <p className="animate-pulse-soft text-lg text-[var(--fg-muted)]">Wahrheit… oder Pflicht? 👀</p>
+          <>
+            <p className="animate-pulse-soft text-lg text-[var(--fg-muted)]">Wahrheit… oder Pflicht? 👀</p>
+            <HostEscape ctx={ctx} label="Spieler überspringen (reagiert nicht)" action="force-skip-player" />
+          </>
         )}
         <div className="mt-8">
           <ScoreStrip ctx={ctx} scores={state.scores} />
@@ -163,7 +176,10 @@ function WahrheitPflicht({ ctx }: GameProps) {
             <Button onClick={() => ctx.send("done")}>✓ Erledigt (+1)</Button>
           </div>
         ) : (
-          <Chip className="mx-auto mt-6 flex w-fit">Die Gruppe urteilt mit den Augen 👁️👁️</Chip>
+          <>
+            <Chip className="mx-auto mt-6 flex w-fit">Die Gruppe urteilt mit den Augen 👁️👁️</Chip>
+            <HostEscape ctx={ctx} label="Spieler überspringen (reagiert nicht)" action="force-skip-player" />
+          </>
         )}
       </div>
     );

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Avatar, Button, Chip, Input, Panel } from "@/components/ui";
-import { PhaseHeader, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 interface WhoState {
@@ -47,18 +47,23 @@ function WerBinIch({ ctx }: GameProps) {
     })();
   }, [isHost, phase, state.assigned, players, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as WhoState;
-    const activeId = s.order?.[s.turn % s.order.length];
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as WhoState;
+    if (!s.order) return;
+    const activeId = s.order[s.turn % s.order.length];
 
-    if (action.type === "vote" && phase === "TURN" && action.from !== activeId) {
+    if (action.type === "force-skip-turn" && snap.phase === "TURN") {
+      ctx.commit({ state: { ...s, votes: {}, turn: nextTurn(s), lastGuess: null } });
+      return;
+    }
+    if (action.type === "vote" && snap.phase === "TURN" && action.from !== activeId) {
       const votes = { ...s.votes, [action.from]: action.data as boolean };
       ctx.commit({ state: { ...s, votes } });
     }
-    if (action.type === "next" && action.from === activeId && phase === "TURN") {
+    if (action.type === "next" && action.from === activeId && snap.phase === "TURN") {
       ctx.commit({ state: { ...s, votes: {}, turn: nextTurn(s), lastGuess: null } });
     }
-    if (action.type === "guess" && action.from === activeId && phase === "TURN") {
+    if (action.type === "guess" && action.from === activeId && snap.phase === "TURN") {
       const target = s.assigned[activeId];
       const correct = normalize(action.data as string) === normalize(target);
       const solved = { ...s.solved };
@@ -183,6 +188,7 @@ function WerBinIch({ ctx }: GameProps) {
           <div className="mt-2">
             <WaitingFor ctx={ctx} doneIds={[...Object.keys(state.votes ?? {}), activeId]} label="Noch nicht abgestimmt" />
           </div>
+          <HostEscape ctx={ctx} label="Spieler überspringen (reagiert nicht)" action="force-skip-turn" />
         </Panel>
       )}
     </div>

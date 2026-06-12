@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Button, Chip, Panel, cn } from "@/components/ui";
-import { PhaseHeader, SharedTimer, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, SharedTimer, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const TURN_SECONDS = 60;
@@ -55,17 +55,49 @@ function TabuGame({ ctx }: GameProps) {
     })();
   }, [isHost, phase, state.teams, players, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as TabuState;
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as TabuState;
     if (!s.teams) return;
     const explainerId = s.teams[s.activeTeam][s.explainerIndex[s.activeTeam] % s.teams[s.activeTeam].length];
 
+    const endTurn = () => {
+      const turnCount = s.turnCount + 1;
+      if (turnCount >= TURNS_PER_TEAM * 2) {
+        const winningTeam = s.teamScores.A > s.teamScores.B ? "A" : s.teamScores.B > s.teamScores.A ? "B" : null;
+        const winners = winningTeam ? s.teams[winningTeam] : [];
+        const scores: Record<string, number> = {};
+        for (const id of s.teams.A) scores[id] = s.teamScores.A;
+        for (const id of s.teams.B) scores[id] = s.teamScores.B;
+        ctx.endGame(winners, scores);
+        return;
+      }
+      const nextTeam = s.activeTeam === "A" ? "B" : "A";
+      ctx.commit({
+        state: {
+          ...s,
+          turnActive: false,
+          turnCount,
+          activeTeam: nextTeam,
+          explainerIndex: { ...s.explainerIndex, [s.activeTeam]: s.explainerIndex[s.activeTeam] + 1 },
+          timerEnd: undefined,
+          timerTotal: undefined,
+        },
+      });
+    };
+
+    if (action.type === "force-skip-turn") {
+      endTurn();
+      return;
+    }
     if (action.type === "start-turn" && action.from === explainerId && !s.turnActive) {
       ctx.commit({
         state: { ...s, turnActive: true, timerEnd: Date.now() + TURN_SECONDS * 1000, timerTotal: TURN_SECONDS * 1000 },
       });
     }
     if (!s.turnActive) return;
+    if (action.type === "end-turn") {
+      endTurn();
+    }
     if (action.type === "correct" && action.from === explainerId) {
       ctx.commit({
         state: {
@@ -90,32 +122,6 @@ function TabuGame({ ctx }: GameProps) {
       });
     }
   });
-
-  const endTurn = () => {
-    const s = ctx.state as TabuState;
-    const turnCount = s.turnCount + 1;
-    if (turnCount >= TURNS_PER_TEAM * 2) {
-      const winningTeam = s.teamScores.A > s.teamScores.B ? "A" : s.teamScores.B > s.teamScores.A ? "B" : null;
-      const winners = winningTeam ? s.teams[winningTeam] : [];
-      const scores: Record<string, number> = {};
-      for (const id of s.teams.A) scores[id] = s.teamScores.A;
-      for (const id of s.teams.B) scores[id] = s.teamScores.B;
-      ctx.endGame(winners, scores);
-      return;
-    }
-    const nextTeam = s.activeTeam === "A" ? "B" : "A";
-    ctx.commit({
-      state: {
-        ...s,
-        turnActive: false,
-        turnCount,
-        activeTeam: nextTeam,
-        explainerIndex: { ...s.explainerIndex, [s.activeTeam]: s.explainerIndex[s.activeTeam] + 1 },
-        timerEnd: undefined,
-        timerTotal: undefined,
-      },
-    });
-  };
 
   if (!state.teams) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Teams werden gelost… 🤫</Panel>;
@@ -155,11 +161,12 @@ function TabuGame({ ctx }: GameProps) {
           ) : (
             <Chip className="mx-auto">Warte, bis {explainer?.username} startet…</Chip>
           )}
+          <HostEscape ctx={ctx} label="Zug überspringen (Spieler reagiert nicht)" action="force-skip-turn" />
         </div>
       ) : (
         <>
           <div className="mb-4 flex justify-center">
-            <SharedTimer ctx={ctx} color="#ff9f4d" size={84} onDone={endTurn} />
+            <SharedTimer ctx={ctx} color="#ff9f4d" size={84} onDone={() => ctx.send("end-turn")} />
           </div>
 
           {(iExplain || iDefend) && word ? (

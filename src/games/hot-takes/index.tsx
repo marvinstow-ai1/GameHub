@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button, Input, Panel, cn } from "@/components/ui";
-import { PhaseHeader, ScoreStrip, SharedTimer, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, ScoreStrip, SharedTimer, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const TOTAL_ROUNDS = 5;
@@ -54,48 +54,76 @@ function HotTakes({ ctx }: GameProps) {
     setText("");
   }
 
-  const toVoting = (s: HotState, submissions: Record<string, string>) => {
-    ctx.commit({
-      state: { ...s, submissions, shuffle: Object.keys(submissions).sort(() => Math.random() - 0.5), votes: {} },
-      phase: "VOTE",
-    });
-  };
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as HotState;
+    if (!s.prompts) return;
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as HotState;
-    if (action.type === "submit" && phase === "WRITE") {
+    const toVoting = (submissions: Record<string, string>) => {
+      if (Object.keys(submissions).length < 2) {
+        // zu wenige Antworten → Runde überspringen statt hängen zu bleiben
+        const round = s.round + 1;
+        if (round >= s.prompts.length) {
+          const best = Math.max(0, ...players.map((p) => s.scores[p.id] ?? 0));
+          ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+          return;
+        }
+        ctx.commit({
+          state: { ...s, round, submissions: {}, votes: {}, shuffle: [], timerEnd: Date.now() + WRITE_SECONDS * 1000, timerTotal: WRITE_SECONDS * 1000 },
+          phase: "WRITE",
+        });
+        return;
+      }
+      ctx.commit({
+        state: {
+          ...s,
+          submissions,
+          shuffle: Object.keys(submissions).sort(() => Math.random() - 0.5),
+          votes: {},
+          timerEnd: undefined,
+          timerTotal: undefined,
+        },
+        phase: "VOTE",
+      });
+    };
+
+    const tallyVotes = (votes: Record<string, string>) => {
+      const scores = { ...s.scores };
+      for (const target of Object.values(votes)) scores[target] = (scores[target] ?? 0) + 100;
+      ctx.commit({ state: { ...s, votes, scores }, phase: "REVEAL" });
+    };
+
+    if (action.type === "timeout" && snap.phase === "WRITE") {
+      toVoting(s.submissions);
+    }
+    if (action.type === "force-vote" && snap.phase === "VOTE") {
+      tallyVotes(s.votes);
+    }
+    if (action.type === "next" && snap.phase === "REVEAL") {
+      const round = s.round + 1;
+      if (round >= s.prompts.length) {
+        const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
+        ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+        return;
+      }
+      ctx.commit({
+        state: { ...s, round, submissions: {}, votes: {}, shuffle: [], timerEnd: Date.now() + WRITE_SECONDS * 1000, timerTotal: WRITE_SECONDS * 1000 },
+        phase: "WRITE",
+      });
+    }
+    if (action.type === "submit" && snap.phase === "WRITE") {
       const submissions = { ...s.submissions, [action.from]: action.data as string };
       const everyone = players.every((p) => submissions[p.id] || !p.online);
-      if (everyone) toVoting(s, submissions);
+      if (everyone) toVoting(submissions);
       else ctx.commit({ state: { ...s, submissions } });
     }
-    if (action.type === "vote" && phase === "VOTE") {
+    if (action.type === "vote" && snap.phase === "VOTE") {
       if (action.data === action.from) return; // nicht für sich selbst
       const votes = { ...s.votes, [action.from]: action.data as string };
-      const everyone = players.every((p) => votes[p.id] || !p.online || !s.submissions[p.id]);
-      if (everyone) {
-        const scores = { ...s.scores };
-        for (const target of Object.values(votes)) scores[target] = (scores[target] ?? 0) + 100;
-        ctx.commit({ state: { ...s, votes, scores }, phase: "REVEAL" });
-      } else {
-        ctx.commit({ state: { ...s, votes } });
-      }
+      const everyone = players.every((p) => votes[p.id] || !p.online);
+      if (everyone) tallyVotes(votes);
+      else ctx.commit({ state: { ...s, votes } });
     }
   });
-
-  const nextRound = () => {
-    const s = ctx.state as HotState;
-    const round = s.round + 1;
-    if (round >= s.prompts.length) {
-      const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
-      ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
-      return;
-    }
-    ctx.commit({
-      state: { ...s, round, submissions: {}, votes: {}, shuffle: [], timerEnd: Date.now() + WRITE_SECONDS * 1000, timerTotal: WRITE_SECONDS * 1000 },
-      phase: "WRITE",
-    });
-  };
 
   if (!state.prompts) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Heiße Themen werden angeheizt… 🌶️</Panel>;
@@ -109,7 +137,7 @@ function HotTakes({ ctx }: GameProps) {
       <div className="mx-auto max-w-md px-4 pt-6 text-center">
         <PhaseHeader icon="🌶️" title={`Runde ${state.round + 1}/${state.prompts.length}`} subtitle="Schreib die beste Antwort – gevotet wird anonym!" />
         <div className="mb-4 flex justify-center">
-          <SharedTimer ctx={ctx} color="#d96bff" size={84} onDone={() => toVoting(ctx.state as HotState, (ctx.state as HotState).submissions)} />
+          <SharedTimer ctx={ctx} color="#d96bff" size={84} onDone={() => ctx.send("timeout")} />
         </div>
         <Panel glow className="mb-4 py-8">
           <p className="text-xl font-bold leading-snug">{prompt.text}</p>
@@ -164,6 +192,7 @@ function HotTakes({ ctx }: GameProps) {
         <div className="mt-3">
           <WaitingFor ctx={ctx} doneIds={Object.keys(state.votes ?? {})} label="Es voten noch" />
         </div>
+        <HostEscape ctx={ctx} label="Voting jetzt auswerten" action="force-vote" />
       </div>
     );
   }
@@ -194,7 +223,7 @@ function HotTakes({ ctx }: GameProps) {
           <ScoreStrip ctx={ctx} scores={state.scores} />
         </div>
         {isHost && (
-          <Button className="mt-4 w-full" onClick={nextRound}>
+          <Button className="mt-4 w-full" onClick={() => ctx.send("next")}>
             {state.round + 1 >= state.prompts.length ? "🏁 Endergebnis" : "Nächste Runde →"}
           </Button>
         )}

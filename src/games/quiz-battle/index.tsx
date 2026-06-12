@@ -59,49 +59,52 @@ function QuizBattle({ ctx }: GameProps) {
     setPicked(null);
   }
 
-  const finishQuestion = (s: QuizState, answers: QuizState["answers"]) => {
-    const q = s.questions[s.index];
-    const scores = { ...s.scores };
-    for (const [uid, a] of Object.entries(answers)) {
-      if (a.choice === q.correct) {
-        const speedBonus = Math.max(0, Math.round(100 * (1 - a.ms / (QUESTION_SECONDS * 1000))));
-        scores[uid] = (scores[uid] ?? 0) + 100 + speedBonus;
-      }
-    }
-    ctx.commit({ state: { ...s, answers, scores }, phase: "REVEAL" });
-  };
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as QuizState;
+    if (!s.questions) return;
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as QuizState;
-    if (action.type === "answer" && phase === "QUESTION") {
+    const finishQuestion = (answers: QuizState["answers"]) => {
+      const q = s.questions[s.index];
+      const scores = { ...s.scores };
+      for (const [uid, a] of Object.entries(answers)) {
+        if (a.choice === q.correct) {
+          const speedBonus = Math.max(0, Math.round(100 * (1 - a.ms / (QUESTION_SECONDS * 1000))));
+          scores[uid] = (scores[uid] ?? 0) + 100 + speedBonus;
+        }
+      }
+      ctx.commit({ state: { ...s, answers, scores, timerEnd: undefined, timerTotal: undefined }, phase: "REVEAL" });
+    };
+
+    if (action.type === "answer" && snap.phase === "QUESTION") {
       if (s.answers[action.from]) return;
       const answers = { ...s.answers, [action.from]: action.data as { choice: number; ms: number } };
       const everyone = players.every((p) => answers[p.id] || !p.online);
-      if (everyone) finishQuestion(s, answers);
+      if (everyone) finishQuestion(answers);
       else ctx.commit({ state: { ...s, answers } });
     }
-  });
-
-  const nextQuestion = () => {
-    const s = ctx.state as QuizState;
-    const index = s.index + 1;
-    if (index >= s.questions.length) {
-      const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
-      ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
-      return;
+    if (action.type === "timeout" && snap.phase === "QUESTION") {
+      finishQuestion(s.answers);
     }
-    ctx.commit({
-      state: {
-        ...s,
-        index,
-        answers: {},
-        questionStart: Date.now(),
-        timerEnd: Date.now() + QUESTION_SECONDS * 1000,
-        timerTotal: QUESTION_SECONDS * 1000,
-      },
-      phase: "QUESTION",
-    });
-  };
+    if (action.type === "next" && snap.phase === "REVEAL") {
+      const index = s.index + 1;
+      if (index >= s.questions.length) {
+        const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
+        ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+        return;
+      }
+      ctx.commit({
+        state: {
+          ...s,
+          index,
+          answers: {},
+          questionStart: Date.now(),
+          timerEnd: Date.now() + QUESTION_SECONDS * 1000,
+          timerTotal: QUESTION_SECONDS * 1000,
+        },
+        phase: "QUESTION",
+      });
+    }
+  });
 
   if (!state.questions) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Fragen werden geladen… 🧠</Panel>;
@@ -115,7 +118,7 @@ function QuizBattle({ ctx }: GameProps) {
       <div className="mx-auto max-w-xl px-4 pt-6">
         <PhaseHeader icon="🧠" title={`Frage ${state.index + 1}/${state.questions.length}`} subtitle={q.category} />
         <div className="mb-4 flex justify-center">
-          <SharedTimer ctx={ctx} color="#c8f135" size={90} onDone={() => finishQuestion(ctx.state as QuizState, (ctx.state as QuizState).answers)} />
+          <SharedTimer ctx={ctx} color="#c8f135" size={90} onDone={() => ctx.send("timeout")} />
         </div>
         <Panel glow className="mb-5 text-center">
           <p className="text-xl font-bold">{q.question}</p>
@@ -183,7 +186,7 @@ function QuizBattle({ ctx }: GameProps) {
           <ScoreStrip ctx={ctx} scores={state.scores} />
         </div>
         {isHost && (
-          <Button className="mt-4 w-full" onClick={nextQuestion}>
+          <Button className="mt-4 w-full" onClick={() => ctx.send("next")}>
             {state.index + 1 >= state.questions.length ? "🏁 Endergebnis" : "Nächste Frage →"}
           </Button>
         )}

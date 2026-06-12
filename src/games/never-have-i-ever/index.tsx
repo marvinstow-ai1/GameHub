@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Avatar, Button, Panel, cn } from "@/components/ui";
-import { PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const TOTAL_ROUNDS = 15;
@@ -31,32 +31,36 @@ function NeverHaveIEver({ ctx }: GameProps) {
     })();
   }, [isHost, phase, state.prompts, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as NhieState;
-    if (action.type === "answer" && phase === "ANSWER") {
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as NhieState;
+    if (!s.prompts) return;
+
+    const reveal = (answers: NhieState["answers"]) => {
+      const scores = { ...s.scores };
+      for (const [uid, did] of Object.entries(answers)) if (did) scores[uid] = (scores[uid] ?? 0) + 1;
+      ctx.commit({ state: { ...s, answers, scores }, phase: "REVEAL" });
+    };
+
+    if (action.type === "answer" && snap.phase === "ANSWER") {
       if (s.answers[action.from] !== undefined) return;
       const answers = { ...s.answers, [action.from]: action.data as boolean };
       const everyone = players.every((p) => answers[p.id] !== undefined || !p.online);
-      if (everyone) {
-        const scores = { ...s.scores };
-        for (const [uid, did] of Object.entries(answers)) if (did) scores[uid] = (scores[uid] ?? 0) + 1;
-        ctx.commit({ state: { ...s, answers, scores }, phase: "REVEAL" });
-      } else {
-        ctx.commit({ state: { ...s, answers } });
+      if (everyone) reveal(answers);
+      else ctx.commit({ state: { ...s, answers } });
+    }
+    if (action.type === "force-reveal" && snap.phase === "ANSWER") {
+      reveal(s.answers);
+    }
+    if (action.type === "next" && snap.phase === "REVEAL") {
+      const index = s.index + 1;
+      if (index >= s.prompts.length) {
+        const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
+        ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+        return;
       }
+      ctx.commit({ state: { ...s, index, answers: {} }, phase: "ANSWER" });
     }
   });
-
-  const next = () => {
-    const s = ctx.state as NhieState;
-    const index = s.index + 1;
-    if (index >= s.prompts.length) {
-      const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
-      ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
-      return;
-    }
-    ctx.commit({ state: { ...s, index, answers: {} }, phase: "ANSWER" });
-  };
 
   if (!state.prompts) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Geständnisse werden vorbereitet… 🙊</Panel>;
@@ -85,6 +89,7 @@ function NeverHaveIEver({ ctx }: GameProps) {
         <div className="mt-4">
           <WaitingFor ctx={ctx} doneIds={Object.keys(state.answers ?? {})} />
         </div>
+        <HostEscape ctx={ctx} label="Jetzt auflösen" action="force-reveal" />
       </div>
     );
   }
@@ -123,7 +128,7 @@ function NeverHaveIEver({ ctx }: GameProps) {
           <ScoreStrip ctx={ctx} scores={state.scores} />
         </div>
         {isHost && (
-          <Button className="mt-4 w-full" onClick={next}>
+          <Button className="mt-4 w-full" onClick={() => ctx.send("next")}>
             {state.index + 1 >= state.prompts.length ? "🏁 Endergebnis" : "Nächste Aussage →"}
           </Button>
         )}

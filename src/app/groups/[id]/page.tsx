@@ -127,22 +127,41 @@ export default function GroupPage() {
               {sessions.map((s) => {
                 const mod = games.find((g) => g.id === s.game_id);
                 if (!mod) return null;
+                const canClose = profile && (s.host_id === profile.id || data.group.owner_id === profile.id);
                 return (
-                  <button
+                  <div
                     key={s.id}
-                    onClick={() => router.push(`/play/${s.id}`)}
-                    className="flex cursor-pointer items-center gap-4 rounded-3xl border border-[var(--line)] bg-[var(--bg-2)]/80 p-4 text-left transition-all hover:scale-[1.01]"
+                    className="flex items-center gap-4 rounded-3xl border border-[var(--line)] bg-[var(--bg-2)]/80 p-4 transition-all hover:scale-[1.01]"
                     style={{ boxShadow: `0 8px 40px -16px ${mod.themeColor}66` }}
                   >
-                    <span className="text-3xl">{mod.icon}</span>
-                    <span className="flex-1">
-                      <span className="display block font-bold" style={{ color: mod.themeColor }}>{mod.name}</span>
-                      <span className="text-xs text-[var(--fg-muted)]">
-                        {s.status === "lobby" ? "Lobby offen – beitreten!" : "Läuft…"}
+                    <button
+                      onClick={() => router.push(`/play/${s.id}`)}
+                      className="flex flex-1 cursor-pointer items-center gap-4 text-left"
+                    >
+                      <span className="text-3xl">{mod.icon}</span>
+                      <span className="flex-1">
+                        <span className="display block font-bold" style={{ color: mod.themeColor }}>{mod.name}</span>
+                        <span className="text-xs text-[var(--fg-muted)]">
+                          {s.status === "lobby" ? "Lobby offen – beitreten!" : "Läuft…"}
+                        </span>
                       </span>
-                    </span>
-                    <Chip>{s.status === "lobby" ? "Lobby" : s.phase}</Chip>
-                  </button>
+                      <Chip>{s.status === "lobby" ? "Lobby" : s.phase}</Chip>
+                    </button>
+                    {canClose && (
+                      <button
+                        aria-label="Session schließen"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`${mod.name}-Session wirklich schließen?`)) return;
+                          await supabase().from("game_sessions").delete().eq("id", s.id);
+                          load();
+                        }}
+                        className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--line)] text-[var(--fg-muted)] transition-colors hover:border-coral hover:text-coral"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>

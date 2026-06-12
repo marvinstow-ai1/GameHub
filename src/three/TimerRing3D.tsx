@@ -64,6 +64,16 @@ export function TimerRing3D({
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let raf = 0;
 
+    // rAF pausiert in Hintergrund-Tabs – onDone muss trotzdem feuern (z.B. beim Host)
+    const fireDone = () => {
+      if (doneRef.current) return;
+      doneRef.current = true;
+      onDoneRef.current?.();
+    };
+    const doneInterval = setInterval(() => {
+      if (endsAt - Date.now() <= 0) fireDone();
+    }, 500);
+
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const remaining = Math.max(0, endsAt - Date.now());
@@ -90,15 +100,13 @@ export function TimerRing3D({
       if (labelRef.current) labelRef.current.textContent = `${Math.ceil(remaining / 1000)}`;
       renderer.render(scene, camera);
 
-      if (remaining <= 0 && !doneRef.current) {
-        doneRef.current = true;
-        onDoneRef.current?.();
-      }
+      if (remaining <= 0) fireDone();
     };
     raf = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(raf);
+      clearInterval(doneInterval);
       if (arc) {
         arc.geometry.dispose();
         scene.remove(arc);

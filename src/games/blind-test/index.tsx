@@ -24,7 +24,7 @@ function parseYouTubeId(url: string): string | null {
 
 function BlindTest({ ctx }: GameProps) {
   const state = ctx.state as BlindState;
-  const { phase, isHost, players } = ctx;
+  const { isHost, players } = ctx;
   const [url, setUrl] = useState("");
   const [flash, setFlash] = useState(false);
 
@@ -38,39 +38,42 @@ function BlindTest({ ctx }: GameProps) {
     });
   }, [ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as BlindState;
-    if (action.type === "buzz" && phase === "PLAY" && s.playing && !s.buzzedBy) {
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as BlindState;
+    if (action.type === "buzz" && snap.phase === "PLAY" && s.playing && !s.buzzedBy) {
+      // Erster Buzz gewinnt – die Queue garantiert die Reihenfolge
       ctx.sendEvent("buzz-flash");
       ctx.commit({ state: { ...s, buzzedBy: action.from } });
+    }
+    if (action.type === "judge" && s.buzzedBy) {
+      const correct = action.data as boolean;
+      const scores = { ...s.scores };
+      if (correct) {
+        scores[s.buzzedBy] = (scores[s.buzzedBy] ?? 0) + 1;
+        ctx.commit({ state: { ...s, scores, playing: false, buzzedBy: null } });
+      } else {
+        // falsch = kein Abzug; Buzzer wird wieder freigegeben, Musik läuft weiter
+        ctx.commit({ state: { ...s, buzzedBy: null } });
+      }
     }
   });
 
   const loadSong = async (videoUrl?: string) => {
-    const s = ctx.state as BlindState;
     if (videoUrl) {
       const id = parseYouTubeId(videoUrl);
       if (!id) return;
-      ctx.commit({ state: { ...s, videoId: id, songHint: null, buzzedBy: null, playing: true, round: (s.round ?? 0) + 1 } });
+      ctx.commit({
+        state: (cur) => ({ ...cur, videoId: id, songHint: null, buzzedBy: null, playing: true, round: ((cur as BlindState).round ?? 0) + 1 }),
+      });
     } else {
       const [song] = await ctx.fetchContent<{ title: string; artist: string }>("blindtest_songs", 1);
-      ctx.commit({ state: { ...s, videoId: null, songHint: song, buzzedBy: null, playing: true, round: (s.round ?? 0) + 1 } });
+      ctx.commit({
+        state: (cur) => ({ ...cur, videoId: null, songHint: song, buzzedBy: null, playing: true, round: ((cur as BlindState).round ?? 0) + 1 }),
+      });
     }
     setUrl("");
   };
-
-  const judge = (correct: boolean) => {
-    const s = ctx.state as BlindState;
-    if (!s.buzzedBy) return;
-    const scores = { ...s.scores };
-    if (correct) {
-      scores[s.buzzedBy] = (scores[s.buzzedBy] ?? 0) + 1;
-      ctx.commit({ state: { ...s, scores, playing: false, buzzedBy: null } });
-    } else {
-      scores[s.buzzedBy] = (scores[s.buzzedBy] ?? 0) - 0; // falsch = kein Abzug, nur wieder freigeben
-      ctx.commit({ state: { ...s, scores, buzzedBy: null } });
-    }
-  };
+  const judge = (correct: boolean) => ctx.send("judge", correct);
 
   const buzzer = players.find((p) => p.id === state.buzzedBy);
 
@@ -92,7 +95,7 @@ function BlindTest({ ctx }: GameProps) {
           <Button variant="ghost" className="mt-2 w-full" onClick={() => loadSong()}>
             🎲 Zufälliger Song aus dem Pool
           </Button>
-          {state.videoId && state.playing && (
+          {state.videoId && state.playing && !state.buzzedBy && (
             <div className="mt-3 overflow-hidden rounded-2xl">
               <iframe
                 width="100%"
@@ -127,7 +130,7 @@ function BlindTest({ ctx }: GameProps) {
           <Panel glow className="py-8 text-center">
             <Avatar name={buzzer.username} hue={buzzer.hue} size={64} className="mx-auto" />
             <p className="mt-3 text-xl font-extrabold">🚨 {buzzer.username} hat gebuzzert!</p>
-            <p className="mt-1 text-sm text-[var(--fg-muted)]">Antwort laut sagen – der Host entscheidet.</p>
+            <p className="mt-1 text-sm text-[var(--fg-muted)]">Musik pausiert – Antwort laut sagen, der Host entscheidet.</p>
             {isHost && (
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <Button variant="ghost" onClick={() => judge(false)}>✗ Falsch – weiter</Button>

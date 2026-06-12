@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button, Chip, Input, Panel, cn } from "@/components/ui";
-import { PhaseHeader, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 type CardColor = "red" | "blue" | "neutral" | "assassin";
@@ -65,10 +65,14 @@ function Codenames({ ctx }: GameProps) {
     })();
   }, [isHost, phase, state.words, players, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as CodenamesState;
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as CodenamesState;
     if (!s.words) return;
 
+    if (action.type === "force-pass") {
+      ctx.commit({ state: { ...s, clue: null, guessesLeft: 0, turn: s.turn === "red" ? "blue" : "red" } });
+      return;
+    }
     if (action.type === "clue" && action.from === s.spymasters[s.turn] && !s.clue) {
       const { word, count } = action.data as { word: string; count: number };
       ctx.commit({ state: { ...s, clue: { word, count }, guessesLeft: count + 1 } });
@@ -208,6 +212,7 @@ function Codenames({ ctx }: GameProps) {
         </Button>
       )}
       {amSpymaster && <Chip className="mx-auto mt-3 flex w-fit">🤫 Du bist Geheimdienstchef – nicht spoilern!</Chip>}
+      <HostEscape ctx={ctx} label="Zug ans andere Team geben (Team reagiert nicht)" action="force-pass" />
     </div>
   );
 }

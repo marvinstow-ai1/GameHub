@@ -1,32 +1,44 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { TimerRing3D } from "@/three/TimerRing3D";
 import { Avatar, Button, Chip, Panel, cn } from "@/components/ui";
 import { useStage } from "@/three/stage";
-import type { GameAction, GameCtx } from "./types";
+import type { GameAction, GameCtx, HostSnapshot } from "./types";
 import type { GameModule } from "./types";
 
 /* ---------- Host-Logik: Aktionen abonnieren (nur als Host aktiv) ---------- */
 
-export function useHostActions(ctx: GameCtx, handler: (action: GameAction) => void) {
-  const { isHost, onAction } = ctx;
+/**
+ * Registriert den Host-Reducer. Aktionen kommen seriell aus der Queue,
+ * `snap` ist dabei IMMER der frischeste Stand aus der Engine –
+ * niemals den State aus dem Render-Closure für Spiellogik verwenden.
+ */
+export function useHostActions(
+  ctx: GameCtx,
+  handler: (action: GameAction, snap: HostSnapshot) => void | Promise<void>
+) {
+  const { isHost, onHostAction } = ctx;
+  const handlerRef = useRef(handler);
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
   useEffect(() => {
     if (!isHost) return;
-    return onAction(handler);
-    // handler bewusst nicht in deps – Spiele übergeben inline-Closures über aktuellem State
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost, onAction, ctx.state, ctx.phase, ctx.players.length]);
+    return onHostAction((action, snap) => handlerRef.current(action, snap));
+  }, [isHost, onHostAction]);
 }
 
 /* ---------- Timer (geteilt über state.timerEnd / state.timerTotal) ---------- */
 
-export function startTimer(ctx: GameCtx, seconds: number, extra?: Record<string, unknown>) {
-  return ctx.commit({
-    state: (s) => ({ ...s, ...extra, timerEnd: Date.now() + seconds * 1000, timerTotal: seconds * 1000 }),
-    ...(extra && "phase" in extra ? { phase: extra.phase as string } : {}),
-  });
+export function timerFields(seconds: number) {
+  return { timerEnd: Date.now() + seconds * 1000, timerTotal: seconds * 1000 };
+}
+
+export function clearedTimer() {
+  return { timerEnd: undefined, timerTotal: undefined };
 }
 
 export function SharedTimer({ ctx, color, onDone, size = 110 }: { ctx: GameCtx; color?: string; onDone?: () => void; size?: number }) {
@@ -92,13 +104,52 @@ export function LobbyView({ ctx, module: mod, onStart }: { ctx: GameCtx; module:
         </div>
       </Panel>
       {ctx.isHost ? (
-        <Button size="lg" disabled={!enough || full} onClick={onStart} className="w-full">
-          {enough ? "Spiel starten" : `Noch ${mod.minPlayers - ctx.players.length} Spieler nötig…`}
-        </Button>
+        <>
+          <Button size="lg" disabled={!enough || full} onClick={onStart} className="w-full">
+            {enough ? "Spiel starten" : `Noch ${mod.minPlayers - ctx.players.length} Spieler nötig…`}
+          </Button>
+          <CloseSessionButton ctx={ctx} label="Lobby schließen" />
+        </>
       ) : (
         <Chip>Warte auf den Host…</Chip>
       )}
     </div>
+  );
+}
+
+/** Host/Owner: Session löschen und zurück zur Gruppe. */
+export function CloseSessionButton({ ctx, label = "Spiel abbrechen" }: { ctx: GameCtx; label?: string }) {
+  const router = useRouter();
+  if (!ctx.isHost) return null;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="text-[var(--fg-muted)]"
+      onClick={async () => {
+        if (!window.confirm("Session wirklich schließen? Das Spiel wird für alle beendet.")) return;
+        await ctx.closeSession();
+        router.push(`/groups/${ctx.session.group_id}`);
+      }}
+    >
+      ✕ {label}
+    </Button>
+  );
+}
+
+/**
+ * Notausgang für den Host, wenn auf Spieler gewartet wird, die nicht mehr
+ * reagieren – löst eine Aktion aus, die die Runde trotzdem abschließt.
+ */
+export function HostEscape({ ctx, label, action }: { ctx: GameCtx; label: string; action: string }) {
+  if (!ctx.isHost) return null;
+  return (
+    <button
+      onClick={() => ctx.send(action)}
+      className="display mx-auto mt-3 block cursor-pointer rounded-xl border border-dashed border-[var(--line)] px-3 py-2 text-xs font-bold text-[var(--fg-muted)] hover:border-[var(--accent)] hover:text-[var(--fg)]"
+    >
+      ⏭ {label}
+    </button>
   );
 }
 

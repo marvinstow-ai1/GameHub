@@ -3,45 +3,69 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button, Chip, Input, Panel } from "@/components/ui";
-import { PhaseHeader, ScoreStrip, SharedTimer, WaitingFor, useHostActions } from "../kit";
-import type { GameModule, GameProps } from "../types";
+import {
+  HostEscape,
+  PhaseHeader,
+  ScoreStrip,
+  SharedTimer,
+  WaitingFor,
+  clearedTimer,
+  timerFields,
+  useHostActions,
+} from "../kit";
+import type { GameModule, GameProps, GameState } from "../types";
 
 const LETTERS = "ABCDEFGHIJKLMNOPRSTUVWZ";
 const TOTAL_ROUNDS = 3;
-const ROUND_SECONDS = 75;
+const ROUND_SECONDS = 90;
+/** Klassische Regel: Nach "Stopp!" haben alle anderen noch kurz Zeit, den Stift fallen zu lassen. */
+const STOP_GRACE_MS = 3000;
 
-interface SlfState {
+interface SlfState extends GameState {
   categories: string[];
   letter: string;
+  usedLetters: string[];
   round: number;
   /** answers[round][uid] = string[] */
   answers: Record<string, Record<string, string[]>>;
   submitted: string[];
   scores: Record<string, number>;
+  stoppedBy?: string | null;
+  roundDone?: boolean;
   timerEnd?: number;
   timerTotal?: number;
-  [key: string]: unknown;
 }
 
+/**
+ * Klassisches Stadt-Land-Fluss-Scoring:
+ *  20 Punkte – als Einzige(r) eine gültige Antwort in der Kategorie
+ *  10 Punkte – gültige Antwort, die kein anderer hat
+ *   5 Punkte – gültige Antwort, die auch jemand anderes hat
+ *   0 Punkte – leer oder falscher Anfangsbuchstabe
+ */
 function scoreRound(answers: Record<string, string[]>, letter: string, categories: string[]) {
   const scores: Record<string, number> = {};
   const detail: Record<string, number[]> = {};
-  for (const uid of Object.keys(answers)) {
+  const uids = Object.keys(answers);
+  for (const uid of uids) {
     scores[uid] = 0;
     detail[uid] = [];
   }
   categories.forEach((_, ci) => {
     const normalized: Record<string, string> = {};
-    for (const uid of Object.keys(answers)) {
+    for (const uid of uids) {
       const raw = (answers[uid]?.[ci] ?? "").trim().toLowerCase();
       normalized[uid] = raw.startsWith(letter.toLowerCase()) && raw.length > 1 ? raw : "";
     }
-    for (const uid of Object.keys(answers)) {
+    const validCount = Object.values(normalized).filter(Boolean).length;
+    for (const uid of uids) {
       const value = normalized[uid];
       let pts = 0;
       if (value) {
         const dup = Object.entries(normalized).some(([other, v]) => other !== uid && v === value);
-        pts = dup ? 5 : 10;
+        if (!dup && validCount === 1) pts = 20;
+        else if (!dup) pts = 10;
+        else pts = 5;
       }
       scores[uid] += pts;
       detail[uid].push(pts);
@@ -50,37 +74,44 @@ function scoreRound(answers: Record<string, string[]>, letter: string, categorie
   return { scores, detail };
 }
 
+function newRound(s: SlfState | GameState, categories: string[], round: number): SlfState {
+  const used = ((s as SlfState).usedLetters ?? []) as string[];
+  const available = LETTERS.split("").filter((l) => !used.includes(l));
+  const letter = available[Math.floor(Math.random() * available.length)] ?? LETTERS[Math.floor(Math.random() * LETTERS.length)];
+  return {
+    ...(s as SlfState),
+    categories,
+    letter,
+    usedLetters: [...used, letter],
+    round,
+    submitted: [],
+    stoppedBy: null,
+    roundDone: false,
+    ...timerFields(ROUND_SECONDS),
+  };
+}
+
 function StadtLandFluss({ ctx }: GameProps) {
   const state = ctx.state as SlfState;
   const { phase, self, isHost, players } = ctx;
   const [inputs, setInputs] = useState<string[]>(() => Array(5).fill(""));
   const [localSubmitted, setLocalSubmitted] = useState(false);
   const initRef = useRef(false);
+  const graceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Host: Runde initialisieren
+  // Host: erste Runde initialisieren
   useEffect(() => {
-    if (!isHost || phase !== "WRITE" || initRef.current) return;
-    if (state.letter && !state.roundDone) return;
+    if (!isHost || phase !== "WRITE" || state.letter || initRef.current) return;
     initRef.current = true;
     (async () => {
       const cats = await ctx.fetchContent<{ name: string }>("slf_categories", 5);
-      const round = (state.round ?? 0) + 1;
       ctx.commit({
-        state: {
-          ...state,
-          categories: cats.map((c) => c.name),
-          letter: LETTERS[Math.floor(Math.random() * LETTERS.length)],
-          round,
-          submitted: [],
-          roundDone: false,
-          timerEnd: Date.now() + ROUND_SECONDS * 1000,
-          timerTotal: ROUND_SECONDS * 1000,
-        },
+        state: (s) => ({ ...newRound(s, cats.map((c) => c.name), 1), answers: {}, scores: {} }),
       });
     })();
-  }, [isHost, phase, state, ctx]);
+  }, [isHost, phase, state.letter, ctx]);
 
-  // Neue Runde → Inputs leeren
+  // Neue Runde → lokale Eingaben zurücksetzen
   const [prevRound, setPrevRound] = useState(state.round ?? 0);
   if (prevRound !== (state.round ?? 0)) {
     setPrevRound(state.round ?? 0);
@@ -96,33 +127,61 @@ function StadtLandFluss({ ctx }: GameProps) {
     submittedRef.current = iSubmitted;
   }, [inputs, iSubmitted]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as SlfState;
-    if (action.type === "submit" && phase === "WRITE") {
+  // Host-Reducer: alle Aktionen seriell, immer auf frischem Snapshot
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as SlfState;
+    if (snap.phase !== "WRITE" || s.roundDone) return;
+
+    const finalize = (answers: SlfState["answers"]) => {
+      if (graceRef.current) {
+        clearTimeout(graceRef.current);
+        graceRef.current = null;
+      }
+      const roundAnswers = answers[String(s.round)] ?? {};
+      const { scores } = scoreRound(roundAnswers, s.letter, s.categories);
+      const total = { ...s.scores };
+      for (const [uid, pts] of Object.entries(scores)) total[uid] = (total[uid] ?? 0) + pts;
+      return ctx.commit({
+        state: (cur) => ({ ...cur, answers, scores: total, roundDone: true, ...clearedTimer() }),
+        phase: "REVIEW",
+      });
+    };
+
+    if (action.type === "submit") {
       const roundKey = String(s.round);
-      const answers = { ...s.answers, [roundKey]: { ...(s.answers?.[roundKey] ?? {}), [action.from]: action.data as string[] } };
+      const answers = {
+        ...s.answers,
+        [roundKey]: { ...(s.answers?.[roundKey] ?? {}), [action.from]: action.data as string[] },
+      };
       const submitted = [...new Set([...(s.submitted ?? []), action.from])];
       const everyone = players.every((p) => submitted.includes(p.id) || !p.online);
       if (everyone) {
-        const { scores } = scoreRound(answers[roundKey], s.letter, s.categories);
-        const total = { ...s.scores };
-        for (const [uid, pts] of Object.entries(scores)) total[uid] = (total[uid] ?? 0) + pts;
-        ctx.commit({ state: { ...s, answers, submitted, scores: total, roundDone: true }, phase: "REVIEW" });
+        finalize(answers);
       } else {
-        ctx.commit({ state: { ...s, answers, submitted } });
+        ctx.commit({ state: (cur) => ({ ...cur, answers, submitted }) });
       }
     }
-    if (action.type === "stop" && phase === "WRITE") {
-      // Klassisch: "Stopp!" beendet die Runde für alle – fehlende Antworten zählen nicht
+
+    if (action.type === "stop" && !s.stoppedBy) {
+      // Stopp! – Timer für alle sofort auf 0, kurze Gnadenfrist, dann wird gewertet
+      ctx.commit({
+        state: (cur) => ({ ...cur, stoppedBy: action.from, timerEnd: Date.now(), timerTotal: s.timerTotal }),
+      });
       ctx.sendEvent("force-submit");
+      graceRef.current = setTimeout(() => ctx.send("finalize"), STOP_GRACE_MS);
+    }
+
+    if (action.type === "finalize" || action.type === "force-finish") {
+      finalize(s.answers ?? {});
     }
   });
 
-  // Bei "Stopp" oder Timer-Ende: eigene (Teil-)Antworten abschicken
+  // Alle Clients: Bei "Stopp" (oder Timer-Ende) eigene (Teil-)Antworten sofort abschicken
   useEffect(() => {
     return ctx.onEvent((event) => {
       if (event.type === "force-submit" && !submittedRef.current && phase === "WRITE") {
         submittedRef.current = true;
+        setLocalSubmitted(true);
         ctx.send("submit", inputsRef.current);
       }
     });
@@ -135,9 +194,26 @@ function StadtLandFluss({ ctx }: GameProps) {
     ctx.send("stop");
   };
 
+  // Host: nächste Runde / Spielende
+  const nextRound = async () => {
+    const s = ctx.state as SlfState;
+    if (s.round >= TOTAL_ROUNDS) {
+      const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
+      ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+      return;
+    }
+    const cats = await ctx.fetchContent<{ name: string }>("slf_categories", 5);
+    ctx.commit({
+      state: (cur) => newRound(cur, cats.map((c) => c.name), (cur as SlfState).round + 1),
+      phase: "WRITE",
+    });
+  };
+
   if (!state.letter || !state.categories) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Kategorien werden gezogen… ✍️</Panel>;
   }
+
+  const stopper = players.find((p) => p.id === state.stoppedBy);
 
   if (phase === "WRITE") {
     return (
@@ -147,13 +223,13 @@ function StadtLandFluss({ ctx }: GameProps) {
           title={`Buchstabe: ${state.letter}`}
           subtitle={`Runde ${state.round} von ${TOTAL_ROUNDS} – wer zuerst fertig ist, drückt Stopp!`}
         />
-        <div className="mb-4 flex justify-center">
-          <SharedTimer
-            ctx={ctx}
-            color="#4dc9ff"
-            size={90}
-            onDone={() => ctx.sendEvent("force-submit")}
-          />
+        <div className="mb-4 flex flex-col items-center gap-2">
+          <SharedTimer ctx={ctx} color="#4dc9ff" size={90} onDone={() => ctx.send("stop")} />
+          {stopper && (
+            <motion.div initial={{ scale: 0.6 }} animate={{ scale: 1 }}>
+              <Chip className="border-coral text-coral">🛑 {stopper.username} hat gestoppt – Stifte fallen lassen!</Chip>
+            </motion.div>
+          )}
         </div>
         <div className="flex flex-col gap-3">
           {state.categories.map((cat, i) => (
@@ -178,6 +254,7 @@ function StadtLandFluss({ ctx }: GameProps) {
         <div className="mt-3">
           <WaitingFor ctx={ctx} doneIds={state.submitted ?? []} />
         </div>
+        <HostEscape ctx={ctx} label="Runde jetzt auswerten" action="force-finish" />
       </div>
     );
   }
@@ -188,7 +265,11 @@ function StadtLandFluss({ ctx }: GameProps) {
     const isLast = state.round >= TOTAL_ROUNDS;
     return (
       <div className="mx-auto max-w-2xl px-4 pt-6">
-        <PhaseHeader icon="📊" title={`Auswertung – Runde ${state.round}`} subtitle="10 Punkte einzigartig · 5 doppelt · 0 ungültig" />
+        <PhaseHeader
+          icon="📊"
+          title={`Auswertung – Runde ${state.round}`}
+          subtitle="20 = einzige gültige Antwort · 10 = einzigartig · 5 = doppelt · 0 = ungültig"
+        />
         <ScoreStrip ctx={ctx} scores={state.scores} />
         <div className="scrollbar-slim mt-3 overflow-x-auto">
           <table className="w-full min-w-[480px] text-sm">
@@ -209,7 +290,7 @@ function StadtLandFluss({ ctx }: GameProps) {
                     const pts = detail[p.id]?.[ci] ?? 0;
                     return (
                       <td key={ci} className="py-2 pr-2">
-                        <span className={pts === 0 ? "text-[var(--fg-muted)] line-through" : pts === 10 ? "font-bold text-mint" : ""}>
+                        <span className={pts === 0 ? "text-[var(--fg-muted)] line-through" : pts >= 10 ? "font-bold text-mint" : ""}>
                           {answer || "—"}
                         </span>
                         {answer && <span className="ml-1 text-xs text-[var(--fg-muted)]">+{pts}</span>}
@@ -221,23 +302,13 @@ function StadtLandFluss({ ctx }: GameProps) {
             </tbody>
           </table>
         </div>
-        {isHost && (
-          <Button
-            className="mt-6 w-full"
-            onClick={() => {
-              if (isLast) {
-                const best = Math.max(...players.map((p) => state.scores[p.id] ?? 0));
-                ctx.endGame(players.filter((p) => (state.scores[p.id] ?? 0) === best).map((p) => p.id), state.scores);
-              } else {
-                initRef.current = false;
-                ctx.commit({ state: { ...state, roundDone: true }, phase: "WRITE" });
-              }
-            }}
-          >
+        {isHost ? (
+          <Button className="mt-6 w-full" onClick={nextRound}>
             {isLast ? "🏁 Endergebnis" : "Nächste Runde →"}
           </Button>
+        ) : (
+          <Chip className="mx-auto mt-6 flex w-fit">Warte auf den Host…</Chip>
         )}
-        {!isHost && <Chip className="mx-auto mt-6 flex w-fit">Warte auf den Host…</Chip>}
       </div>
     );
   }

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Avatar, Button, Panel } from "@/components/ui";
-import { PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, ScoreStrip, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const TOTAL_ROUNDS = 5;
@@ -56,35 +56,40 @@ function RankingBattle({ ctx }: GameProps) {
     setOrder(players.map((p) => p.id));
   }
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as RankState;
-    if (action.type === "submit" && phase === "RANK") {
+  useHostActions(ctx, (action, snap) => {
+    const s = snap.state as RankState;
+    if (!s.prompts) return;
+
+    const finishRound = (rankings: RankState["rankings"]) => {
+      if (Object.keys(rankings).length === 0) return;
+      const result = evaluate(rankings, players.map((p) => p.id));
+      const minDist = Math.min(...Object.values(result.distances));
+      const scores = { ...s.scores };
+      for (const [uid, d] of Object.entries(result.distances)) {
+        if (d === minDist) scores[uid] = (scores[uid] ?? 0) + 100;
+      }
+      ctx.commit({ state: { ...s, rankings, scores, lastResult: result }, phase: "REVEAL" });
+    };
+
+    if (action.type === "submit" && snap.phase === "RANK") {
       const rankings = { ...s.rankings, [action.from]: action.data as string[] };
       const everyone = players.every((p) => rankings[p.id] || !p.online);
-      if (everyone) {
-        const result = evaluate(rankings, players.map((p) => p.id));
-        const minDist = Math.min(...Object.values(result.distances));
-        const scores = { ...s.scores };
-        for (const [uid, d] of Object.entries(result.distances)) {
-          if (d === minDist) scores[uid] = (scores[uid] ?? 0) + 100;
-        }
-        ctx.commit({ state: { ...s, rankings, scores, lastResult: result }, phase: "REVEAL" });
-      } else {
-        ctx.commit({ state: { ...s, rankings } });
+      if (everyone) finishRound(rankings);
+      else ctx.commit({ state: { ...s, rankings } });
+    }
+    if (action.type === "force-finish" && snap.phase === "RANK") {
+      finishRound(s.rankings);
+    }
+    if (action.type === "next" && snap.phase === "REVEAL") {
+      const round = s.round + 1;
+      if (round >= s.prompts.length) {
+        const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
+        ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
+        return;
       }
+      ctx.commit({ state: { ...s, round, rankings: {}, lastResult: null }, phase: "RANK" });
     }
   });
-
-  const nextRound = () => {
-    const s = ctx.state as RankState;
-    const round = s.round + 1;
-    if (round >= s.prompts.length) {
-      const best = Math.max(...players.map((p) => s.scores[p.id] ?? 0));
-      ctx.endGame(players.filter((p) => (s.scores[p.id] ?? 0) === best).map((p) => p.id), s.scores);
-      return;
-    }
-    ctx.commit({ state: { ...s, round, rankings: {}, lastResult: null }, phase: "RANK" });
-  };
 
   if (!state.prompts) {
     return <Panel className="mx-auto mt-16 max-w-sm text-center">Podium wird aufgebaut… 🏆</Panel>;
@@ -136,6 +141,7 @@ function RankingBattle({ ctx }: GameProps) {
         <div className="mt-3">
           <WaitingFor ctx={ctx} doneIds={Object.keys(state.rankings ?? {})} />
         </div>
+        <HostEscape ctx={ctx} label="Runde jetzt auswerten" action="force-finish" />
       </div>
     );
   }
@@ -180,7 +186,7 @@ function RankingBattle({ ctx }: GameProps) {
         </Panel>
         <ScoreStrip ctx={ctx} scores={state.scores} />
         {isHost && (
-          <Button className="mt-4 w-full" onClick={nextRound}>
+          <Button className="mt-4 w-full" onClick={() => ctx.send("next")}>
             {state.round + 1 >= state.prompts.length ? "🏁 Endergebnis" : "Nächste Runde →"}
           </Button>
         )}

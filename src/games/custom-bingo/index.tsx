@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button, Input, Panel, cn } from "@/components/ui";
-import { PhaseHeader, WaitingFor, useHostActions } from "../kit";
+import { HostEscape, PhaseHeader, WaitingFor, useHostActions } from "../kit";
 import type { GameModule, GameProps } from "../types";
 
 const STATEMENTS_PER_PLAYER = 3;
@@ -41,42 +41,46 @@ function CustomBingo({ ctx }: GameProps) {
     ctx.commit({ state: { pool: [], submitted: [], boards: {}, marks: {} } });
   }, [isHost, phase, state.pool, ctx]);
 
-  useHostActions(ctx, (action) => {
-    const s = ctx.state as BingoState;
-    if (action.type === "submit-statements" && phase === "COLLECT") {
+  useHostActions(ctx, async (action, snap) => {
+    const s = snap.state as BingoState;
+    if (!s.pool) return;
+
+    const buildBoards = async (pool: string[], submitted: string[]) => {
+      // Pool ggf. mit Seed-Statements auffüllen und Boards bauen
+      let fullPool = [...new Set(pool)];
+      const need = BOARD * BOARD;
+      if (fullPool.length < need) {
+        const extra = await ctx.fetchContent<{ text: string }>("bingo_statements", need * 2);
+        fullPool = [...new Set([...fullPool, ...extra.map((e) => e.text)])];
+      }
+      const boards: Record<string, string[]> = {};
+      const marks: Record<string, boolean[]> = {};
+      for (const p of players) {
+        boards[p.id] = [...fullPool].sort(() => Math.random() - 0.5).slice(0, need);
+        marks[p.id] = Array(need).fill(false);
+      }
+      await ctx.commit({ state: { ...s, pool: fullPool, submitted, boards, marks }, phase: "PLAY" });
+    };
+
+    if (action.type === "submit-statements" && snap.phase === "COLLECT") {
       if (s.submitted.includes(action.from)) return;
       const pool = [...s.pool, ...(action.data as string[])];
       const submitted = [...s.submitted, action.from];
       const everyone = players.every((p) => submitted.includes(p.id) || !p.online);
-      if (!everyone) {
-        ctx.commit({ state: { ...s, pool, submitted } });
-        return;
-      }
-      // Pool ggf. mit Seed-Statements auffüllen und Boards bauen
-      (async () => {
-        let fullPool = [...new Set(pool)];
-        const need = BOARD * BOARD;
-        if (fullPool.length < need) {
-          const extra = await ctx.fetchContent<{ text: string }>("bingo_statements", need * 2);
-          fullPool = [...new Set([...fullPool, ...extra.map((e) => e.text)])];
-        }
-        const boards: Record<string, string[]> = {};
-        const marks: Record<string, boolean[]> = {};
-        for (const p of players) {
-          boards[p.id] = [...fullPool].sort(() => Math.random() - 0.5).slice(0, need);
-          marks[p.id] = Array(need).fill(false);
-        }
-        ctx.commit({ state: { ...s, pool: fullPool, submitted, boards, marks }, phase: "PLAY" });
-      })();
+      if (everyone) await buildBoards(pool, submitted);
+      else ctx.commit({ state: { ...s, pool, submitted } });
     }
-    if (action.type === "mark" && phase === "PLAY") {
+    if (action.type === "force-build" && snap.phase === "COLLECT") {
+      await buildBoards(s.pool, s.submitted);
+    }
+    if (action.type === "mark" && snap.phase === "PLAY") {
       const { index, value } = action.data as { index: number; value: boolean };
       const myMarks = [...(s.marks[action.from] ?? [])];
       myMarks[index] = value;
       const marks = { ...s.marks, [action.from]: myMarks };
       ctx.commit({ state: { ...s, marks } });
     }
-    if (action.type === "claim" && phase === "PLAY") {
+    if (action.type === "claim" && snap.phase === "PLAY") {
       const myMarks = s.marks[action.from] ?? [];
       if (hasBingo(myMarks)) {
         ctx.endGame([action.from]);
@@ -124,6 +128,7 @@ function CustomBingo({ ctx }: GameProps) {
         <div className="mt-3">
           <WaitingFor ctx={ctx} doneIds={state.submitted ?? []} />
         </div>
+        <HostEscape ctx={ctx} label="Boards jetzt erstellen (Rest wird aufgefüllt)" action="force-build" />
       </div>
     );
   }
